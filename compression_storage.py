@@ -205,15 +205,30 @@ soc, battery_power = get_storage_content()
 start_time = "2024-01-01"
 end_time = "2024-12-30"
 
+
 # df = df.loc[start_time:end_time]
+def preprocess_df(df, results):
+    # Transfer all relevant result flows into df columns.
+    df["grid_import"] = (
+        results[(el_source, b_el)]["sequences"]["flow"]
+        + results[(el_peak_source, b_el)]["sequences"]["flow"]
+    ).loc[df.index]
+    df["pv_feed_in"] = results[(b_pv, excess_sink)]["sequences"]["flow"].loc[df.index]
+    df["pv_self_use"] = df["pv"] - df["pv_feed_in"]
+    df["compression_power"] = results[(b_el, compression_converter)]["sequences"]["flow"].loc[df.index]
+    df["expansion_power"] = results[(expansion_converter, b_el)]["sequences"]["flow"].loc[df.index]
+    df["heat_output"] = results[(compression_converter, b_heat)]["sequences"]["flow"].loc[df.index]
+    df["cold_output"] = results[(expansion_converter, b_cold)]["sequences"]["flow"].loc[df.index]
+
+    return df
 
 
-def recalculate_compression_expansion(df_orig, results, soc):
+def recalculate_compression_expansion(df, results):
     """
     Recalculates compression and expansion power based on SOC to avoid simultaneous compression and expansion.
     Also updates heat output, cold output, and adjusts grid import, PV self-use and PV feed-in accordingly.
     """
-    df = df_orig.copy()
+    soc = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
 
     # Compute storage power change per timestep
     soc_change = (
@@ -221,19 +236,19 @@ def recalculate_compression_expansion(df_orig, results, soc):
     )  # Forward shift to align with time step changes
 
     # Create new series for recalculated values
-    df["compression_power_recalc"] = soc_change.clip(
+    df["compression_power"] = soc_change.clip(
         lower=0
     )  # Only positive changes = compression
-    df["expansion_power_recalc"] = -soc_change.clip(
+    df["expansion_power"] = -soc_change.clip(
         upper=0
     )  * 0.4  # Only negative changes = expansion
 
     # Compute heat and cold outputs
-    df["heat_output_recalc"] = (
-        df["compression_power_recalc"] * 0.9
+    df["heat_output"] = (
+        df["compression_power"] * 0.9
     )  # 90% of compression energy
-    df["cold_output_recalc"] = (
-        df["expansion_power_recalc"] * 0.4
+    df["cold_output"] = (
+        df["expansion_power"] * 0.4
     )  # 40% of expansion energy
 
     # Get the original data from oemof results
@@ -242,9 +257,9 @@ def recalculate_compression_expansion(df_orig, results, soc):
     df["pv_self_use"] = df["pv"] - df["pv_feed_in"]  # PV used directly
 
     total_energy_in = (
-        df["grid_import"] + df["pv_feed_in"] + df["expansion_power_recalc"]
+        df["grid_import"] + df["pv_feed_in"] + df["expansion_power"]
     )
-    total_energy_out = df["compression_power_recalc"] + df["demand"]
+    total_energy_out = df["compression_power"] + df["demand"]
 
     df["excess_energy"] = total_energy_in - total_energy_out
 
@@ -286,6 +301,107 @@ def recalculate_compression_expansion(df_orig, results, soc):
 
 
 def validate_caes_model(df, results):
+    print("\n🔍 Running CAES Model Validation Checks...")
+
+    try:
+        # 1️⃣ Demand and PV production should remain identical
+        assert (
+            df["demand"].sum() == results[(b_el, demand)]["sequences"]["flow"].sum()
+        ), "Mismatch in demand"
+        assert (
+            df["pv"].sum() == results[(pv, b_pv)]["sequences"]["flow"].sum()
+        ), "Mismatch in PV production"
+
+        # 2️⃣ Total electricity consumption should increase
+        total_energy_ref = (df["demand"] - df["pv"]).clip(lower=0).sum()
+        total_energy_caes = (
+            df["grid_import"].sum()
+            + df["pv_self_use"].sum()
+            - df["compression_power"].sum()
+            + df["expansion_power"].sum()
+        )
+        print("total_energy_ref: ", total_energy_ref)
+        print("total_energy_caes: ", total_energy_caes)
+        assert (
+            total_energy_caes >= total_energy_ref
+        ), "⚠️ Total energy consumption should increase with CAES"
+
+        # 3️⃣ PV link flow is always positive
+        assert df["pv_self_use"].min() >= 0, "⚠️ PV link flow should always be positive"
+
+        # 4️⃣ Only PV should feed the excess sink
+        pv_production = results[(pv, b_pv)]["sequences"]["flow"]
+        excess_sink_series = results[(b_pv, excess_sink)]["sequences"]["flow"]
+        assert (
+            pv_production - excess_sink_series
+        ).min() >= 0, "⚠️ Only PV should feed the excess sink"
+
+        # 5️⃣ Stored compressed air should match expanded air
+        b_air_in_series = results[(compression_converter, b_air_in)]["sequences"][
+            "flow"
+        ]
+        b_air_out_series = results[(b_air_out, expansion_converter)]["sequences"][
+            "flow"
+        ]
+        assert (
+            b_air_in_series.sum() - b_air_out_series.sum() < 1e-3
+        ), "⚠️ Stored air does not match expanded air"
+
+        # 6️⃣ Expansion-to-Compression efficiency should be 40%
+        compression_energy = df["compression_power"].sum()
+        expansion_energy = df["expansion_power"].sum()
+        assert (
+            abs(compression_energy - expansion_energy / 0.4) < 1e-3
+        ), "⚠️ CAES electric efficiency is incorrect"
+
+        # 7️⃣ Heat & Cold outputs should match expected ratios
+        heat_output = df["heat_output"].sum()
+        cold_output = df["cold_output"].sum()
+        assert (
+            abs(heat_output / compression_energy - 0.9) < 1e-3
+        ), "⚠️ Heat output ratio incorrect"
+        assert (
+            abs(cold_output / expansion_energy - 0.4) < 1e-3
+        ), "⚠️ Cold output ratio incorrect"
+
+        # 8️⃣ Heat and cold output ratios to stored air
+        assert (
+            abs(heat_output / b_air_in_series.sum() - 0.9) < 1e-3
+        ), "⚠️ Heat output ratio incorrect"
+        assert (
+            abs(cold_output / b_air_out_series.sum() - 0.4) < 1e-3
+        ), "⚠️ Cold output ratio incorrect"
+
+        #  🔟 **Balance Calculation: Energy Inputs vs. Outputs**
+        print("\n📊 **Energy Balance Check** 📊")
+        print("-" * 50)
+
+        # Now using the recalculated values from df:
+        total_energy_in = df["grid_import"].sum() + df["pv_feed_in"].sum() + expansion_energy
+        total_energy_out = compression_energy + df["demand"].sum()
+
+        print(f'🔹 Grid Import: {df["grid_import"].sum():.2f} kWh')
+        print(f'🔹 PV Feed-in: {df["pv_feed_in"].sum():.2f} kWh')
+        print(f'🔹 Expansion Power (recalc): {expansion_energy:.2f} kWh')
+        print(f'-----------------------------------')
+        print(f'🔸 Compression Power (recalc): {compression_energy:.2f} kWh')
+        print(f'🔸 Demand: {df["demand"].sum():.2f} kWh')
+        print(f'-----------------------------------')
+        print(f'✅ Total Energy In: {total_energy_in:.2f} kWh')
+        print(f'✅ Total Energy Out: {total_energy_out:.2f} kWh')
+        print(f'-----------------------------------')
+
+        assert (
+            abs(total_energy_in - total_energy_out) < 1e-3
+        ), "⚠️ Energy balance mismatch"
+
+        print("✅ All validation checks passed successfully!")
+
+    except AssertionError as e:
+        print(f"❌ Validation failed: {e}")
+
+
+def validate_caes_model_old(df, results):
     print("\n🔍 Running CAES Model Validation Checks...")
 
     try:
@@ -646,8 +762,12 @@ def plot_results(start_time, end_time, soc, df):
     plt.tight_layout()
     plt.show()
 
+df = preprocess_df(df, results)
+df_re = df.copy()
+df_re = preprocess_df(df_re, results)
+
 # Run the recalculation
-df_re = recalculate_compression_expansion(df, results, soc)
+df_re = recalculate_compression_expansion(df_re, results)
 
 for df in [df, df_re]:
     validate_caes_model(df, results)
