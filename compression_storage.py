@@ -2,6 +2,8 @@ import pandas as pd
 import oemof.solph as solph
 import matplotlib.pyplot as plt
 import sys
+from pyomo.environ import Var, ConstraintList, Binary
+from pyomo.opt import SolverFactory
 
 def get_data():
     # Load time series data (assuming you have a CSV file with datetime index)
@@ -46,9 +48,9 @@ df = get_data()
 feed_in_price = 14  # €cent/kWh
 pv_consumption_compensation = 28.74  # €cent/kWh
 factor = 0.4
-heat_price = 7 * 0.2  # €cent/kWh
-cold_price = df["price"] - 5  # €cent/kWh
-peak_threshold = 60  # kW
+heat_price = 7  # €cent/kWh
+cold_price = df["price"] - 4  # €cent/kWh
+peak_threshold = 70  # kW
 peak_cost = 20000  # €c/kW
 converter_costs = 0.1  # €c/kWh 0.1 is quite high
 
@@ -169,7 +171,48 @@ energy_system.add(cold_sink)
 # Create and solve the optimization model
 model = solph.Model(energy_system)
 
-model.solve(solver="cbc", solve_kwargs={"tee": True})
+## apply big-M method to enforce non-simultaneity of compression and expansion
+# --- Add binary variables ---
+# non_simul_mode[t] == 1 means that in time period t the compression converter is allowed to run,
+# and the expansion converter is forced off; if 0 then the reverse holds.
+
+
+# Note: Replace the indices below with the correct keys to access the flow variables
+# from the respective converter components in your pyomo model.
+time_keys = sorted(
+    {
+        key[2]
+        for key in model.flow.keys()
+        if key[0] == compression_converter and key[1] == b_air_in
+    }
+)
+model.non_simul_mode = Var(time_keys, domain=Binary)
+
+# # --- Add constraints to enforce non-simultaneity ---
+model.non_simul_constraints = ConstraintList()
+
+M_compresion = 100
+M_expansion = 40
+
+for t in time_keys:
+    # Constraint: If non_simul_mode[t] is 1, compression flow can be up to M, but expansion must be 0.
+    model.non_simul_constraints.add(
+        model.flow[compression_converter, b_air_in, t]
+        <= M_compresion * model.non_simul_mode[t]
+    )
+    # Constraint: If non_simul_mode[t] is 0, expansion flow can be up to M, but compression must be 0.
+    model.non_simul_constraints.add(
+        model.flow[b_air_out, expansion_converter, t]
+        <= M_expansion * (1 - model.non_simul_mode[t])
+    )
+
+solver = SolverFactory("cbc")
+# Relax the optimality gap to 5%
+solver.options["ratioGap"] = 0.1  # or 5%, meaning a 5% gap is acceptable
+
+results = solver.solve(model, tee=True)
+
+# model.solve(solver="cbc", solve_kwargs={"tee": True})
 
 # Extract results
 results = solph.processing.results(model)
@@ -639,14 +682,14 @@ def plot_results(start_time, end_time, soc, df):
     plt.show()
 
 
-df = preprocess_df(df, results)
-df_re = df.copy()
-df_re = preprocess_df(df_re, results)
+df_loop = preprocess_df(df, results)
+# df_re = df.copy()
+# df_re = preprocess_df(df_re, results)
 
-# Run the recalculation
-df_re = recalculate_compression_expansion(df_re, results)
+# # Run the recalculation
+# df_re = recalculate_compression_expansion(df_re, results)
 
-for df_loop in [df, df_re]:
-    validate_caes_model(df_loop, results)
-    evaluate_economic_impact(df_loop, results)
-    plot_results(start_time, end_time, soc, df_loop)
+# for df_loop in [df, df_re]:
+validate_caes_model(df_loop, results)
+evaluate_economic_impact(df_loop, results)
+plot_results(start_time, end_time, soc, df_loop)
