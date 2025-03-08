@@ -253,13 +253,14 @@ print(storage_flows.head())
 start_time = "2024-05-01"
 end_time = "2024-05-16"
 
-
-def preprocess_df(df, results):
-    # Transfer all relevant result flows into df columns.
+def preprocess_ref(df):
     df["grid_import_ref"] = (df["demand"] - df["pv"]).clip(lower=0)
     df["pv_feed_in_ref"] = (df["pv"] - df["demand"]).clip(lower=0)
-    df["pv_self_use_ref"] = df["pv"] - df["pv_feed_in_ref"]    
+    df["pv_self_use_ref"] = df["pv"] - df["pv_feed_in_ref"]
+    return df
 
+def preprocess_caes(df, results):
+    # Transfer all relevant caes result flows into df columns.
     df["grid_import_caes"] = (
         results[(el_source, b_el)]["sequences"]["flow"]
         + results[(el_peak_source, b_el)]["sequences"]["flow"]
@@ -287,68 +288,52 @@ def recalculate_compression_expansion(df, results):
     Recalculates compression and expansion power based on SOC to avoid simultaneous compression and expansion.
     Also updates heat output, cold output, and adjusts grid import, PV self-use and PV feed-in accordingly.
     """
-    soc = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
+    df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
 
     # Compute storage power change per timestep
     soc_change = (
-        soc.diff().shift(-1).fillna(0)
+        df["soc"].diff().shift(-1).fillna(0)
     )  # Forward shift to align with time step changes
 
     # Create new series for recalculated values
     df["compression_power"] = soc_change.clip(
         lower=0
     )  # Only positive changes = compression
+    expansion_efficiency = 0.4
     df["expansion_power"] = -soc_change.clip(
         upper=0
-    )  * 0.4  # Only negative changes = expansion
+    )  * expansion_efficiency  # Only negative changes = expansion
 
     # Compute heat and cold outputs
-    df["heat_output"] = (
-        df["compression_power"] * 0.9
-    )  # 90% of compression energy
-    df["cold_output"] = (
-        df["expansion_power"] * 0.4
-    )  # 40% of expansion energy
+    heat_output_efficiency = 0.9  # heat recovery from compression
+    cold_output_efficiency = 0.4  # cooling output from expansion
 
-    # check if expansion_power - compression_power - demand is never positive
-    excess_energy = df["expansion_power"] - df["compression_power"] - df["demand"]
-    if (excess_energy > 0).any():
-        print("⚠️ Warning: Excess energy during compression/expansion detected!")
-        # sys.exit(1)
+    df["heat_output"] = df["compression_power"] * heat_output_efficiency
+    df["cold_output"] = df["expansion_power"] * cold_output_efficiency
 
-    # Recalculate PV feed-in based on the energy balance:
-    # Sources: PV production + expansion power + grid import (if needed)
-    # Sinks: Compression power + demand + pv feed-in (if surplus)
-    # Any surplus (if available) is exported as PV feed-in.
-    # Any deficit is covered by grid import.
-    df["pv_feed_in"] = (
+    energy_balance = (
         df["pv"] + df["expansion_power"] - df["compression_power"] - df["demand"]
-    ).clip(lower=0)
-    # PV self-use is then what remains from the total PV production.
-    df["pv_self_use"] = df["pv"] - df["pv_feed_in"]
-
-    # Grid import now covers any remaining deficit:
-    # Total sinks (compression + demand) not covered by PV feed-in and expansion are met by grid import.
-    df["grid_import"] = (
-        df["compression_power"]
-        + df["demand"]
-        - df["pv_feed_in"]
-        - df["expansion_power"]
     )
 
-    # grid import should always be positive
-    if (df["grid_import"] < 0).any():
-        print("⚠️ Warning: Negative grid import detected!")
-        # sys.exit(1)
+    df["pv_feed_in_caes"] = energy_balance.clip(lower=0)
+    df["pv_self_use_caes"] = df["pv"] - df["pv_feed_in_caes"]
+    df["grid_import_caes"] = (-energy_balance).clip(lower=0)
 
-    # Check the overall energy balance (should be zero or very close)
-    total_energy_in = df["grid_import"] + df["pv_feed_in"] + df["expansion_power"]
-    total_energy_out = df["compression_power"] + df["demand"]
-    df["excess_energy"] = total_energy_in - total_energy_out
+    excess_energy = (
+        df["grid_import_caes"]
+        + df["pv_feed_in_caes"]
+        + df["expansion_power"]
+        - df["compression_power"]
+        - df["demand"]
+    )
 
+    # Check for significant mismatch
+    tolerance = 1e-3
+    if abs(excess_energy.sum()) > tolerance:
+        print("⚠️ Warning: Energy balance mismatch detected!")
 
     print("\n✅ Recalculated compression & expansion power based on SOC")
-    print("   ➝ Sum of excess energy:", df["excess_energy"].sum())
+    print("   ➝ Sum of excess energy:", excess_energy.sum())
     print("   ➝ No simultaneous bidirectional flows")
     print("   ➝ Adjusted grid import & PV self-use accordingly")
     return df
@@ -697,95 +682,6 @@ def plot_results(start_time, end_time, df):
     plt.show()
 
 
-def save_and_print_energy_balance(df):
-    """
-    Creates an energy balance table comparing reference and CAES cases.
-    Saves the table as a CSV file and prints it in a readable format.
-    """
-
-    filename = "results/energy_balance.csv"
-
-    total_energy_in_ref = df["grid_import_ref"].sum() + df["pv"].sum()
-    total_energy_out_ref = df["demand"].sum() + df["pv_feed_in_ref"].sum()
-
-    total_energy_in_caes = (
-        df["grid_import_caes"].sum() + df["pv"].sum() + df["expansion_power"].sum()
-        )
-    total_energy_out_caes = (
-        df["demand"].sum() + df["pv_feed_in_caes"].sum() + df["compression_power"].sum()
-    )
-
-    balance_data = {
-        "Energy Balance (Reference) [kWh]": [
-            df["demand"].sum(),
-            df["pv"].sum(),
-            df["pv_feed_in_ref"].sum(),
-            df["grid_import_ref"].sum(),
-            None,  # Compression (not in reference)
-            None,  # Expansion (not in reference)
-            total_energy_in_ref,
-            total_energy_out_ref,
-            total_energy_in_ref - total_energy_out_ref
-        ],
-        "Energy Balance (CAES) [kWh]": [
-            df["demand"].sum(),
-            df["pv"].sum(),
-            df["pv_feed_in_caes"].sum(),
-            df["grid_import_caes"].sum(),
-            df["compression_power"].sum(),
-            df["expansion_power"].sum(),
-            total_energy_in_caes,
-            total_energy_out_caes,
-            total_energy_in_caes - total_energy_out_caes
-        ],
-        "Costs (Reference) [€]": [
-            None,  # Demand has no cost
-            None,  # PV has no cost
-            -df["pv_feed_in_earnings_ref"].sum(),
-            df["cost_grid_import_ref"].sum(),
-            None,  # Compression cost (not in reference)
-            None,  # Expansion cost (not in reference)
-            df["total_cost_ref"].sum(),
-            None,  # Total energy out (not cost-related)
-            None,  # Balance difference (not cost-related)
-        ],
-        "Costs (CAES) [€]": [
-            None,
-            None,
-            -df["pv_feed_in_earnings_caes"].sum(),
-            df["cost_grid_import_caes"].sum(),
-            df["compression_power"].sum() * converter_costs / 100,
-            df["expansion_power"].sum() * converter_costs / 100,
-            df["total_cost_caes"].sum(),
-            None,
-            None,
-        ],
-    }
-
-    # Convert to DataFrame
-    df_balance = pd.DataFrame(
-        balance_data,
-        index=[
-            "Total Demand",
-            "PV Generation",
-            "PV Feed-In",
-            "Grid Import",
-            "Compression Energy",
-            "Expansion Energy",
-            "Total Energy In",
-            "Total Energy Out",
-            "Energy Balance (In - Out)",
-        ],
-    )
-
-    # Save to CSV
-    df_balance.to_csv(filename)
-    print(f"\n✅ Energy balance saved to {filename}")
-
-    print("\n📊 **Energy Balance & Cost Summary** 📊\n")
-    print(tabulate(df_balance, headers="keys", tablefmt="fancy_grid", floatfmt=".2f"))
-
-
 def create_energy_balance_table(df):
     total_energy_in_ref = df["grid_import_ref"].sum() + df["pv"].sum()
     total_energy_out_ref = df["demand"].sum() + df["pv_feed_in_ref"].sum()
@@ -890,18 +786,24 @@ def create_economic_summary_table(df):
     print(tabulate(economics_df, headers="keys", tablefmt="fancy_grid", floatfmt=".2f"))
 
 
-df_loop = preprocess_df(df, results)
-save_preprocessed_df(df_loop)
+dfs_to_evaluate = []
 
-# df_re = df.copy()
-# df_re = preprocess_df(df_re, results)
+# Preprocess results without recalculation
+df = preprocess_ref(df)
+df_original = preprocess_caes(df.copy(), results)
+dfs_to_evaluate.append(("Optimization Results", df_original))
 
-# # Run the recalculation
-df_re = recalculate_compression_expansion(df_re, results)
+# Add recalculated results if recalculation is switched off (LP case)
+if not switch_non_simultaneity:
+    df_recalculated = recalculate_compression_expansion(df.copy(), results)
+    dfs_to_evaluate.append(("Recalculated (SOC-based)", df_recalculated))
 
-validate_caes_model(df_loop, results)
-evaluate_economic_impact(df_loop, results)
-# save_and_print_energy_balance(df_loop)
-create_energy_balance_table(df_loop)
-create_economic_summary_table(df_loop)
-plot_results(start_time, end_time, df_loop)
+# Process and visualize all prepared DataFrames
+for label, df_l in dfs_to_evaluate:
+    print(f"\n🔹 Evaluating: {label}")
+    save_preprocessed_df(df_l)
+    validate_caes_model(df_l, results)
+    evaluate_economic_impact(df_l, results)
+    create_energy_balance_table(df_l)
+    create_economic_summary_table(df_l)
+    plot_results(start_time, end_time, df_l)
