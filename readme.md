@@ -17,7 +17,7 @@ battery <-->  |                |  <-- grid_source
 				+----------------+				    +----+
 demand  <-- 	|                |  <-- PV_link <-- |    |  <-- PV
 				|                |				    |    |
-				|                |					|    |  --> excess_sink
+				|                |					|    |  --> feed_in / excess sink
 				|                |					+----+
 				|                |				  	    			  b_air
 				|                |									 +----+

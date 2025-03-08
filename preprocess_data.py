@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import pytz
 
 # Load the ODS file
 filename = "stromdaten-2024-1mit Preis.ods"
@@ -12,7 +13,7 @@ df = pd.read_excel(filename, engine="odf", sheet_name=0, header=1, dtype=str)
 df.columns = df.columns.str.strip()
 
 # Extract relevant columns (adjust based on actual column positions)
-df = df.loc[:, ["Datum", "Stunde", "Smartmeter", "Spotpreis", "Produktion Fronius"]]
+df = df.loc[:, ["Datum.1", "Stunde.1", "Smartmeter", "Spotpreis", "Produktion Fronius"]]
 
 # Rename columns for clarity
 df.columns = ["date", "hour", "consumption", "price", "pv"]
@@ -25,7 +26,18 @@ df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
 # Create proper datetime index
 df["datetime"] = df["date"] + pd.to_timedelta(df["hour"], unit="h")
+
+# Define Berlin timezone (MEZ/MESZ)
+tz_berlin = pytz.timezone("Europe/Berlin")
+
+# Localize to Berlin time (MEZ/MESZ)
+df["datetime"] = df["datetime"].dt.tz_localize(
+    tz_berlin, ambiguous="NaT", nonexistent="shift_forward"
+)
+
 df = df.set_index("datetime")
+
+print("df head: ", df.head())
 
 # Convert numeric values and from W to kW
 df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
@@ -42,43 +54,6 @@ df["price"] = df["price"] / 1000 * 100  # Now in €c/kWh
 # Compute correlation before scaling
 correlation_before = df[["consumption", "pv"]].corr()
 print("Correlation before scaling:\n", correlation_before)
-
-# Scale PV
-# scale = 20
-# df["pv"] = df["pv"] * scale
-# df["demand"] = df["consumption"] + df["pv"]
-
-# get max pv value
-print("max pv value: ", df["pv"].max())
-
-def scale_correlation(df):
-    lowest_correlation = {"scale": 0, "correlation": 1}
-    for scale in range(20, 30):
-        df["pv_scaled"] = df["pv"] * scale
-        df["demand"] = df["consumption"] + df["pv_scaled"]
-
-        # Compute correlation after scaling
-        correlation_after = df[["demand", "pv_scaled"]].corr()
-        print(
-            "Correlation for scale ", scale, ":",
-            correlation_after["demand"]["pv_scaled"],
-        )
-
-        if (
-            correlation_after["demand"]["pv_scaled"]
-            < lowest_correlation["correlation"]
-        ):
-            lowest_correlation["correlation"] = correlation_after["demand"][
-                "pv_scaled"
-            ]
-            lowest_correlation["scale"] = scale
-
-    print(f"Lowest correlation for scale {lowest_correlation['scale']}: {lowest_correlation['correlation']}")
-
-    df.drop(columns=["pv_scaled"], inplace=True)
-    df["pv"] = df["pv"] * lowest_correlation["scale"]
-    df["demand"] = df["consumption"] + df["pv"]
-# scale_correlation(df)
 
 
 def find_best_scale(df, scale_range=(1, 30), step=0.5):
@@ -122,27 +97,16 @@ def find_best_scale(df, scale_range=(1, 30), step=0.5):
 
 
 # Run the function
-df, best_scale, results = find_best_scale(df, scale_range=(1, 30), step=0.5)
-
+# df, best_scale, results = find_best_scale(df, scale_range=(1, 30), step=0.5)
+best_scale = 8
 df["pv"] = df["pv"] * best_scale
 df["demand"] = df["consumption"] + df["pv"]
-
-
-# print("Unique hour values:", df["hour"].unique())
-# df = df[df["hour"].between(0, 23)]
-# print(f"length of df: {len(df)}")
-
-# print("Duplicate timestamps:", df.index.duplicated().sum())
-# df = df[~df.index.duplicated(keep="first")]
-
-# df = df.drop_duplicates(subset=["date", "hour"])
 
 print("duplicate rows: ", df.index.duplicated().sum())
 print("length df is: ", len(df))
 
 # Ensure a proper time frequency
 df = df.asfreq("h")  # Ensures hourly time steps
-# df.index = pd.date_range(start=df.index[0], periods=len(df), freq="H")
 
 # Check missing values statistics
 missing_count = df.isna().sum()
@@ -166,32 +130,6 @@ get_missing_timestamps(df)
 # Fill small gaps with interpolation, larger gaps with zero
 df.interpolate(limit=10, inplace=True)  # Linear interpolation for up to 6h gaps
 # ^above method also fills long gaps partially
-
-# Debugging: Check interpolation effect
-# print("Remaining NaNs after interpolation:\n", df.isna().sum())
-
-# get_missing_timestamps(df)
-
-# Identify long gaps *before* filling with zero
-# def count_long_gaps(series, threshold=6):
-#     is_nan = series.isna()
-#     group = (~is_nan).cumsum()  # Assigns a group number to consecutive NaNs
-#     gap_sizes = is_nan.groupby(group).sum()  # Counts NaNs per group
-
-#     long_gaps = gap_sizes[gap_sizes > threshold]  # Only gaps >6 hours
-#     return long_gaps if not long_gaps.empty else None
-
-# # Apply to all columns
-# long_gaps = {col: count_long_gaps(df[col]) for col in df.columns}
-
-# # Print number of long gaps and their sizes
-# print("Number of long gaps per column:")
-# print({col: len(gaps) for col, gaps in long_gaps.items()})
-
-# print("\nSize of long gaps per column:")
-# for col, gaps in long_gaps.items():
-#     if not gaps.empty:
-#         print(f"{col}:\n", gaps)
 
 df.fillna(0, inplace=True)  # Remaining long gaps set to zero
 
@@ -221,7 +159,7 @@ def negative_demand_days(df):
     ax.grid()
 
     plt.show()
-negative_demand_days(df)
+# negative_demand_days(df)
 
 # Drop redundant columns
 df = df[["demand", "price", "pv"]]
@@ -235,10 +173,53 @@ elif df["pv"].min() < 0:
 df["demand"] = df["demand"].clip(lower=0)
 df["pv"] = df["pv"].clip(lower=0)
 
-# avoid negative prices for now
-# df["price"] = df["price"].clip(lower=0)
-
 print("length df is: ", len(df))
+
+
+def add_cold_price(df):
+    # Load the temperature data
+    weather_filename = "opsd-weather_data-2020-09-16/weather_data.csv"
+    weather_df = pd.read_csv(weather_filename, parse_dates=["utc_timestamp"])
+
+    # Rename and index the weather data
+    weather_df = weather_df.rename(columns={"utc_timestamp": "datetime", "DE_temperature": "ambient_temp"})
+    weather_df = weather_df[["datetime", "ambient_temp"]]
+    weather_df["datetime"] = pd.to_datetime(weather_df["datetime"], format="%Y-%m-%dT%H%M%SZ")
+    weather_df["datetime"] = (
+        weather_df["datetime"].dt.tz_localize("UTC").dt.tz_convert(tz_berlin)
+    )
+    weather_df = weather_df.set_index("datetime")
+
+    # Filter for 2016 if available
+    weather_df = weather_df[weather_df.index.year == 2016]
+    if len(weather_df) == 0:
+        raise ValueError("No weather data available for 2016!")
+
+    # Resample to hourly data to match the main dataset
+    weather_df = weather_df.resample("h").mean()
+
+    # Merge weather data with main dataset
+    df = df.merge(weather_df[["ambient_temp"]], how="left", left_index=True, right_index=True)
+
+    # Define efficiency factor for realistic COP estimation
+    EFFICIENCY_FACTOR = 0.5
+
+    # Function to calculate realistic COP
+    def calculate_real_cop(T_hot_C, T_cold_C=-20, eta=EFFICIENCY_FACTOR):
+        T_hot_K = T_hot_C + 273.15  # Convert to Kelvin
+        T_cold_K = T_cold_C + 273.15  # Convert to Kelvin
+        cop_carnot = T_cold_K / (T_hot_K - T_cold_K)
+        return eta * cop_carnot  # Adjust for real-world efficiency
+
+    # Compute COP for each timestamp based on ambient temperature
+    df["COP_ambient"] = df["ambient_temp"].apply(lambda T: calculate_real_cop(T))
+    df["cold_temp"] = 3
+    df["COP_caes"] = df["cold_temp"].apply(lambda T: calculate_real_cop(T))
+
+    # Compute cost savings per kWh of cold brine
+    df["cold_price"] = (1 / df["COP_ambient"] - 1 / df["COP_caes"]) * df["price"]
+
+add_cold_price(df)
 
 # Save cleaned data for use in oemof
 df.to_csv("data.csv")

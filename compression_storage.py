@@ -4,6 +4,11 @@ import matplotlib.pyplot as plt
 import sys
 from pyomo.environ import Var, ConstraintList, Binary
 from pyomo.opt import SolverFactory
+from tabulate import tabulate
+
+# Set to True to enable non-simultaneity constraints
+switch_non_simultaneity = False
+
 
 def get_data():
     # Load time series data (assuming you have a CSV file with datetime index)
@@ -46,11 +51,11 @@ df = get_data()
 
 # Define a constant feed-in price in €/Wh
 feed_in_price = 14  # €cent/kWh
-pv_consumption_compensation = 28.74  # €cent/kWh
+pv_consumption_compensation = 0 # 28.74  # €cent/kWh
 factor = 0.4
 heat_price = 7  # €cent/kWh
 cold_price = df["price"] - 4  # €cent/kWh
-peak_threshold = 70  # kW
+peak_threshold = 60  # kW
 peak_cost = 20000  # €c/kW
 converter_costs = 0.1  # €c/kWh 0.1 is quite high
 
@@ -60,11 +65,10 @@ energy_system = solph.EnergySystem(timeindex=df.index)
 # Define an electricity bus
 b_el = solph.buses.Bus(label="b_el")
 b_pv = solph.buses.Bus(label="pv_bus")
-b_air_in = solph.buses.Bus(label="b_air_in")  # Air Input Bus
-b_air_out = solph.buses.Bus(label="b_air_out")  # Air Output Bus
+b_air = solph.buses.Bus(label="b_air")  # Air Bus
 b_heat = solph.buses.Bus(label="b_heat")  # Heat Output Bus
 b_cold = solph.buses.Bus(label="b_cold")  # Cold Output Bus
-energy_system.add(b_el, b_pv, b_air_in, b_air_out, b_heat, b_cold)
+energy_system.add(b_el, b_pv, b_air, b_air, b_heat, b_cold)
 
 
 pv_link = solph.components.Converter(
@@ -114,8 +118,8 @@ energy_system.add(demand)
 # storage system
 storage = solph.components.GenericStorage(
     label="storage",
-    inputs={b_air_in: solph.flows.Flow(nominal_value=100)},  # 100 kW charge power
-    outputs={b_air_out: solph.flows.Flow(nominal_value=100)},  # 100 kW discharge power
+    inputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW charge power
+    outputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW discharge power
     nominal_storage_capacity=400,  # 400 kWh total storage capacity
     initial_storage_level=0.5,
     loss_rate=0,  # No self-discharge expected
@@ -130,11 +134,11 @@ compression_converter = solph.components.Converter(
     label="compression_converter",
     inputs={b_el: solph.flows.Flow(nominal_value=100, variable_costs=converter_costs)},  # Max input power 100 kW
     outputs={
-        b_air_in: solph.flows.Flow(nominal_value=100),  # Storing compressed air
+        b_air: solph.flows.Flow(nominal_value=100),  # Storing compressed air
         b_heat: solph.flows.Flow(nominal_value=90),  # Extracting heat
     },
     conversion_factors={
-        b_air_in: 1,  # 100 kWh of electricity goes into 100 kWh compressed air
+        b_air: 1,  # 100 kWh of electricity goes into 100 kWh compressed air
         b_heat: 0.9,  # 90 kWh heat extracted during compression
     }
 )
@@ -144,7 +148,7 @@ energy_system.add(compression_converter)
 expansion_converter = solph.components.Converter(
     label="expansion_converter",
     inputs={
-        b_air_out: solph.flows.Flow(nominal_value=100, variable_costs=converter_costs)
+        b_air: solph.flows.Flow(nominal_value=100, variable_costs=converter_costs)
     },  # Max air input 100 kW
     outputs={
         b_el: solph.flows.Flow(nominal_value=40),  # 40 kWh recovered as electricity
@@ -171,54 +175,66 @@ energy_system.add(cold_sink)
 # Create and solve the optimization model
 model = solph.Model(energy_system)
 
-## apply big-M method to enforce non-simultaneity of compression and expansion
-# --- Add binary variables ---
-# non_simul_mode[t] == 1 means that in time period t the compression converter is allowed to run,
-# and the expansion converter is forced off; if 0 then the reverse holds.
+def apply_non_simultaneity_constraints(model, compression_converter, expansion_converter, b_air, enable=True):
+    if not enable:
+        return
 
+    ## apply big-M method to enforce non-simultaneity of compression and expansion
+    # --- Add binary variables ---
+    # non_simul_mode[t] == 1 means that in time period t the compression converter is allowed to run,
+    # and the expansion converter is forced off; if 0 then the reverse holds.
 
-# Note: Replace the indices below with the correct keys to access the flow variables
-# from the respective converter components in your pyomo model.
-time_keys = sorted(
-    {
-        key[2]
-        for key in model.flow.keys()
-        if key[0] == compression_converter and key[1] == b_air_in
-    }
-)
-model.non_simul_mode = Var(time_keys, domain=Binary)
-
-# # --- Add constraints to enforce non-simultaneity ---
-model.non_simul_constraints = ConstraintList()
-
-M_compresion = 100
-M_expansion = 40
-
-for t in time_keys:
-    # Constraint: If non_simul_mode[t] is 1, compression flow can be up to M, but expansion must be 0.
-    model.non_simul_constraints.add(
-        model.flow[compression_converter, b_air_in, t]
-        <= M_compresion * model.non_simul_mode[t]
+    # Note: Replace the indices below with the correct keys to access the flow variables
+    # from the respective converter components in your pyomo model.
+    time_keys = sorted(
+        {
+            key[2]
+            for key in model.flow.keys()
+            if key[0] == compression_converter and key[1] == b_air
+        }
     )
-    # Constraint: If non_simul_mode[t] is 0, expansion flow can be up to M, but compression must be 0.
-    model.non_simul_constraints.add(
-        model.flow[b_air_out, expansion_converter, t]
-        <= M_expansion * (1 - model.non_simul_mode[t])
-    )
+    model.non_simul_mode = Var(time_keys, domain=Binary)
 
-solver = SolverFactory("cbc")
-# Relax the optimality gap to 5%
-solver.options["ratioGap"] = 0.1  # or 5%, meaning a 5% gap is acceptable
+    # --- Add constraints to enforce non-simultaneity ---
+    model.non_simul_constraints = ConstraintList()
 
-results = solver.solve(model, tee=True)
+    M = 100
+
+    for t in time_keys:
+        # Constraint: If non_simul_mode[t] is 1, compression flow can be up to M, but expansion must be 0.
+        model.non_simul_constraints.add(
+            model.flow[compression_converter, b_air, t]
+            <= M * model.non_simul_mode[t]
+        )
+        # Constraint: If non_simul_mode[t] is 0, expansion flow can be up to M, but compression must be 0.
+        model.non_simul_constraints.add(
+            model.flow[b_air, expansion_converter, t]
+            <= M * (1 - model.non_simul_mode[t])
+        )
+
+# Apply the non-simultaneity constraints
+apply_non_simultaneity_constraints(model, compression_converter, expansion_converter, b_air, enable=switch_non_simultaneity)
+
+
+# solver = SolverFactory("cbc")
+# solver.options["threads"] = 8
+# Relax the optimality gap to 5% or 10%
+# solver.options["ratioGap"] = 0.1  # or 5%, meaning a 5% gap is acceptable
+
+# results = solver.solve(model, tee=True)
+# model.solutions.load_from(results)
+# print("Solver Status:", results.solver.status)
+# print("Termination Condition:", results.solver.termination_condition)
 
 # model.solve(solver="cbc", solve_kwargs={"tee": True})
+model.solve(solver="cbc", solve_kwargs={"tee": True, "options": {"ratioGap": 0.1}})
 
 # Extract results
 results = solph.processing.results(model)
-print("Results keys:")
-for k in results.keys():
-    print(k)  # See what keys exist
+
+# print("Results keys:")
+# for k in results.keys():
+#     print(k)  # See what keys exist
 
 meta_results = solph.processing.meta_results(model)
 
@@ -233,25 +249,17 @@ storage_flows.to_csv("storage_results.csv")
 print(meta_results)
 print(storage_flows.head())
 
-
-# get storage content
-def get_storage_content():
-    # Get storage content (SOC)
-    soc = results[(storage, None)]["sequences"]["storage_content"]
-
-    # Compute battery charging and discharging power from SOC changes
-    battery_power = soc.diff().shift(-1).fillna(0)  # Change in storage content per timestep
-    return soc, battery_power
-soc, battery_power = get_storage_content()
-
 # Define start and end time for the plot
-start_time = "2024-06-01"
-end_time = "2024-06-08"
+start_time = "2024-05-01"
+end_time = "2024-05-16"
 
 
-# df = df.loc[start_time:end_time]
 def preprocess_df(df, results):
     # Transfer all relevant result flows into df columns.
+    df["grid_import_ref"] = (df["demand"] - df["pv"]).clip(lower=0)
+    df["pv_feed_in_ref"] = (df["pv"] - df["demand"]).clip(lower=0)
+    df["pv_self_use_ref"] = df["pv"] - df["pv_feed_in_ref"]    
+
     df["grid_import_caes"] = (
         results[(el_source, b_el)]["sequences"]["flow"]
         + results[(el_peak_source, b_el)]["sequences"]["flow"]
@@ -262,8 +270,16 @@ def preprocess_df(df, results):
     df["expansion_power"] = results[(expansion_converter, b_el)]["sequences"]["flow"].loc[df.index]
     df["heat_output"] = results[(compression_converter, b_heat)]["sequences"]["flow"].loc[df.index]
     df["cold_output"] = results[(expansion_converter, b_cold)]["sequences"]["flow"].loc[df.index]
-
+    df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
     return df
+
+def save_preprocessed_df(df):
+    # filename = input("Enter the filename to save the preprocessed dataframe: ")
+    # if filename:
+    #     filename = "results/" + filename + ".csv"
+    # else:
+    filename = "results/results.csv"
+    df.to_csv(filename)
 
 
 def recalculate_compression_expansion(df, results):
@@ -375,10 +391,10 @@ def validate_caes_model(df, results):
         ).min() >= 0, "⚠️ Only PV should feed the excess sink"
 
         # 5️⃣ Stored compressed air should match expanded air
-        b_air_in_series = results[(compression_converter, b_air_in)]["sequences"][
+        b_air_in_series = results[(compression_converter, b_air)]["sequences"][
             "flow"
         ]
-        b_air_out_series = results[(b_air_out, expansion_converter)]["sequences"][
+        b_air_out_series = results[(b_air, expansion_converter)]["sequences"][
             "flow"
         ]
         assert (
@@ -395,11 +411,16 @@ def validate_caes_model(df, results):
         # 7️⃣ Heat & Cold outputs should match expected ratios
         heat_output = df["heat_output"].sum()
         cold_output = df["cold_output"].sum()
+        print(f"cold output ratio: {cold_output / expansion_energy}")
         assert (
             abs(heat_output / compression_energy - 0.9) < 1e-3
         ), "⚠️ Heat output ratio incorrect"
+        # Cold output should be 40% of b_air_out_series
         assert (
-            abs(cold_output / expansion_energy - 0.4) < 1e-3
+            abs(cold_output / b_air_out_series.sum() - 0.4) < 1e-3
+                ), "⚠️ Cold output ratio incorrect"
+        assert (
+            abs(cold_output - expansion_energy) < 1e-3
         ), "⚠️ Cold output ratio incorrect"
 
         # 8️⃣ Heat and cold output ratios to stored air
@@ -420,19 +441,24 @@ def validate_caes_model(df, results):
         print("-" * 50)
 
         # Now using the recalculated values from df:
-        total_energy_in = df["grid_import_caes"].sum() + df["pv_feed_in_caes"].sum() + expansion_energy
-        total_energy_out = compression_energy + df["demand"].sum()
+        total_energy_in = (
+            df["grid_import_caes"].sum() + df["pv"].sum() + expansion_energy
+        )
+        total_energy_out = (
+            compression_energy + df["demand"].sum() + df["pv_feed_in_caes"].sum()
+        )
 
         print(f'🔹 Grid Import: {df["grid_import_caes"].sum():.2f} kWh')
-        print(f'🔹 PV Feed-in: {df["pv_feed_in_caes"].sum():.2f} kWh')
-        print(f'🔹 Expansion Power (recalc): {expansion_energy:.2f} kWh')
-        print(f'-----------------------------------')
-        print(f'🔸 Compression Power (recalc): {compression_energy:.2f} kWh')
+        print(f'🔹 PV Generation: {df["pv"].sum():.2f} kWh')
+        print(f"🔹 Expansion Power: {expansion_energy:.2f} kWh")
+        print(f"-----------------------------------")
+        print(f"🔸 Compression Power: {compression_energy:.2f} kWh")
         print(f'🔸 Demand: {df["demand"].sum():.2f} kWh')
-        print(f'-----------------------------------')
-        print(f'✅ Total Energy In: {total_energy_in:.2f} kWh')
-        print(f'✅ Total Energy Out: {total_energy_out:.2f} kWh')
-        print(f'-----------------------------------')
+        print(f'🔸 PV Feed-in: {df["pv_feed_in_caes"].sum():.2f} kWh')
+        print(f"-----------------------------------")
+        print(f"✅ Total Energy In: {total_energy_in:.2f} kWh")
+        print(f"✅ Total Energy Out: {total_energy_out:.2f} kWh")
+        print(f"-----------------------------------")
 
         assert (
             abs(total_energy_in - total_energy_out) < 1e-3
@@ -447,17 +473,13 @@ def validate_caes_model(df, results):
 def evaluate_economic_impact(df, results):
     print("\n📊 Evaluating Economic Impact of CAES...")
     # Compute grid import (if demand exceeds PV)
-    df["grid_import_ref"] = (df["demand"] - df["pv"]).clip(lower=0)
     print("grid_import_ref: ", df["grid_import_ref"].sum())
     print("pv_ref total: ", df["pv"].sum())
     print("demand_ref total: ", df["demand"].sum())
 
-    # Compute PV feed-in (if PV exceeds demand)
-    df["pv_feed_in_ref"] = (df["pv"] - df["demand"]).clip(lower=0)
     print("pv_feed_in_ref: ", df["pv_feed_in_ref"].sum())
 
     # Compute PV self-use as the remaining PV after accounting for feed-in
-    df["pv_self_use_ref"] = df["pv"] - df["pv_feed_in_ref"]
     print("pv_self_use_ref: ", df["pv_self_use_ref"].sum())
 
     # Earnings from using PV directly (self-consumption)
@@ -487,7 +509,7 @@ def evaluate_economic_impact(df, results):
     print("grid_import_caes: ", df["grid_import_caes"].sum())
     print("compression_power: ", df["compression_power"].sum())
     print("expansion_power: ", df["expansion_power"].sum())
-    print("^difference: ", df["compression_power"].sum() - df["expansion_power"].sum())
+    # print("^difference: ", df["compression_power"].sum() - df["expansion_power"].sum())
     print("heat_output: ", df["heat_output"].sum())
     print("cold_output: ", df["cold_output"].sum())
     print("pv_self_use_caes: ", df["pv_self_use_caes"].sum())
@@ -540,7 +562,7 @@ def evaluate_economic_impact(df, results):
         )
 
 
-def plot_results(start_time, end_time, soc, df):
+def plot_results(start_time, end_time, df):
     # PLOTTING
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
@@ -585,23 +607,16 @@ def plot_results(start_time, end_time, soc, df):
     else:
         df_cut = df.loc[start_time:end_time]
 
-    # Filter data to the selected time range
-    soc = soc.loc[start_time:end_time]
-
     demand_results = df_cut["demand"]
     pv_results = df_cut["pv"]
     grid_export = df_cut["pv_feed_in_caes"]
     compression_power = df_cut["compression_power"]
     expansion_power = df_cut["expansion_power"]
-    
+
     ax1.axhline(peak_threshold, color="red", linestyle="dashed")
     ax1.plot(demand_results.index, demand_results, label="Demand", color="blue")
     ax1.plot(pv_results.index, pv_results, label="PV Production", color="orange")
 
-    # p_g_import_cut = grid_import + peak_grid_import.loc[start_time:end_time]
-    # ax1.plot(
-    #     p_g_import_cut.index, p_g_import_cut, label="Peak Grid Import", color="red"
-    # )
     grid_import_cut = grid_import.loc[start_time:end_time]
     ax1.plot(grid_import_cut.index, grid_import_cut, label="Grid Import", color="black")
 
@@ -663,7 +678,7 @@ def plot_results(start_time, end_time, soc, df):
 
     # Second subplot: State of Charge (SOC)
     ax3 = axes[1]
-    ax3.plot(soc.index, soc, label="Battery SOC", color="purple")
+    ax3.plot(df_cut.index, df_cut["soc"], label="Battery SOC", color="purple")
     ax3.set_ylabel("State of Charge [kWh]")
     ax3.axhline(0, color="gray", linestyle="dashed")  # Horizontal helper line for SOC
     # ax3.spines["left"].set_position(("data", 0))  # Move y-axis to cross x-axis at zero
@@ -682,14 +697,211 @@ def plot_results(start_time, end_time, soc, df):
     plt.show()
 
 
+def save_and_print_energy_balance(df):
+    """
+    Creates an energy balance table comparing reference and CAES cases.
+    Saves the table as a CSV file and prints it in a readable format.
+    """
+
+    filename = "results/energy_balance.csv"
+
+    total_energy_in_ref = df["grid_import_ref"].sum() + df["pv"].sum()
+    total_energy_out_ref = df["demand"].sum() + df["pv_feed_in_ref"].sum()
+
+    total_energy_in_caes = (
+        df["grid_import_caes"].sum() + df["pv"].sum() + df["expansion_power"].sum()
+        )
+    total_energy_out_caes = (
+        df["demand"].sum() + df["pv_feed_in_caes"].sum() + df["compression_power"].sum()
+    )
+
+    balance_data = {
+        "Energy Balance (Reference) [kWh]": [
+            df["demand"].sum(),
+            df["pv"].sum(),
+            df["pv_feed_in_ref"].sum(),
+            df["grid_import_ref"].sum(),
+            None,  # Compression (not in reference)
+            None,  # Expansion (not in reference)
+            total_energy_in_ref,
+            total_energy_out_ref,
+            total_energy_in_ref - total_energy_out_ref
+        ],
+        "Energy Balance (CAES) [kWh]": [
+            df["demand"].sum(),
+            df["pv"].sum(),
+            df["pv_feed_in_caes"].sum(),
+            df["grid_import_caes"].sum(),
+            df["compression_power"].sum(),
+            df["expansion_power"].sum(),
+            total_energy_in_caes,
+            total_energy_out_caes,
+            total_energy_in_caes - total_energy_out_caes
+        ],
+        "Costs (Reference) [€]": [
+            None,  # Demand has no cost
+            None,  # PV has no cost
+            -df["pv_feed_in_earnings_ref"].sum(),
+            df["cost_grid_import_ref"].sum(),
+            None,  # Compression cost (not in reference)
+            None,  # Expansion cost (not in reference)
+            df["total_cost_ref"].sum(),
+            None,  # Total energy out (not cost-related)
+            None,  # Balance difference (not cost-related)
+        ],
+        "Costs (CAES) [€]": [
+            None,
+            None,
+            -df["pv_feed_in_earnings_caes"].sum(),
+            df["cost_grid_import_caes"].sum(),
+            df["compression_power"].sum() * converter_costs / 100,
+            df["expansion_power"].sum() * converter_costs / 100,
+            df["total_cost_caes"].sum(),
+            None,
+            None,
+        ],
+    }
+
+    # Convert to DataFrame
+    df_balance = pd.DataFrame(
+        balance_data,
+        index=[
+            "Total Demand",
+            "PV Generation",
+            "PV Feed-In",
+            "Grid Import",
+            "Compression Energy",
+            "Expansion Energy",
+            "Total Energy In",
+            "Total Energy Out",
+            "Energy Balance (In - Out)",
+        ],
+    )
+
+    # Save to CSV
+    df_balance.to_csv(filename)
+    print(f"\n✅ Energy balance saved to {filename}")
+
+    print("\n📊 **Energy Balance & Cost Summary** 📊\n")
+    print(tabulate(df_balance, headers="keys", tablefmt="fancy_grid", floatfmt=".2f"))
+
+
+def create_energy_balance_table(df):
+    total_energy_in_ref = df["grid_import_ref"].sum() + df["pv"].sum()
+    total_energy_out_ref = df["demand"].sum() + df["pv_feed_in_ref"].sum()
+
+    total_energy_in_caes = (
+        df["grid_import_caes"].sum() + df["pv"].sum() + df["expansion_power"].sum()
+    )
+    total_energy_out_caes = (
+        df["demand"].sum() + df["pv_feed_in_caes"].sum() + df["compression_power"].sum()
+    )
+
+    balance_data = {
+        "Reference [kWh]": [
+            df["demand"].sum(),
+            df["pv"].sum(),
+            df["pv_feed_in_ref"].sum(),
+            df["grid_import_ref"].sum(),
+            None,
+            None,
+            total_energy_in_ref,
+            total_energy_out_ref,
+            total_energy_in_ref - total_energy_out_ref,
+        ],
+        "CAES [kWh]": [
+            df["demand"].sum(),
+            df["pv"].sum(),
+            df["pv_feed_in_caes"].sum(),
+            df["grid_import_caes"].sum(),
+            df["compression_power"].sum(),
+            df["expansion_power"].sum(),
+            total_energy_in_caes,
+            total_energy_out_caes,
+            total_energy_in_caes - total_energy_out_caes,
+        ],
+    }
+
+    index = [
+        "Total Demand",
+        "PV Generation",
+        "PV Feed-In",
+        "Grid Import",
+        "Compression Energy",
+        "Expansion Energy",
+        "Total Energy In",
+        "Total Energy Out",
+        "Energy Balance (In - Out)",
+    ]
+
+    df_energy = pd.DataFrame(balance_data, index=index)
+    df_energy.to_csv("results/energy_balance.csv")
+    print(tabulate(df_energy, headers="keys", tablefmt="fancy_grid", floatfmt=".2f"))
+
+
+def create_economic_summary_table(df):
+    peak_cost_ref = df["grid_import_ref"].max() * peak_cost / 100
+    cost_peak_caes = df["grid_import_caes"].max() * peak_cost / 100
+
+    economics_data = {
+        "Reference [€]": [
+            df["cost_grid_import_ref"].sum(),
+            peak_cost_ref,
+            -df["pv_feed_in_earnings_ref"].sum(),
+            -df["pv_self_use_earnings_ref"].sum(),
+            0,
+            0,
+            0,
+            0,
+            df["total_cost_ref"].sum(),
+        ],
+        "CAES [€]": [
+            df["cost_grid_import_caes"].sum(),
+            cost_peak_caes,
+            -df["pv_feed_in_earnings_caes"].sum(),
+            -df["pv_self_use_earnings_caes"].sum(),
+            -df["heat_earnings_caes"].sum(),
+            -df["cold_earnings_caes"].sum(),
+            df["compression_power"].sum() * converter_costs / 100,
+            df["expansion_power"].sum() * converter_costs / 100,
+            df["total_cost_caes"].sum(),
+        ],
+    }
+
+    economics_df = pd.DataFrame(
+        economics_data,
+        index=[
+            "Grid Import Costs",
+            "Peak Load Costs",
+            "PV Feed-in Earnings",
+            "PV Self-Consumption Earnings",
+            "Heat Earnings",
+            "Cold Earnings",
+            "Compression Costs",
+            "Expansion Costs",
+            "Total Costs (Net)",
+        ],
+    )
+
+    economics_df["Difference [€]"] = (
+        economics_df["Reference [€]"] - economics_df["CAES [€]"]
+    )
+    economics_df.to_csv("results/economic_summary.csv")
+    print(tabulate(economics_df, headers="keys", tablefmt="fancy_grid", floatfmt=".2f"))
+
+
 df_loop = preprocess_df(df, results)
+save_preprocessed_df(df_loop)
+
 # df_re = df.copy()
 # df_re = preprocess_df(df_re, results)
 
 # # Run the recalculation
-# df_re = recalculate_compression_expansion(df_re, results)
+df_re = recalculate_compression_expansion(df_re, results)
 
-# for df_loop in [df, df_re]:
 validate_caes_model(df_loop, results)
 evaluate_economic_impact(df_loop, results)
-plot_results(start_time, end_time, soc, df_loop)
+# save_and_print_energy_balance(df_loop)
+create_energy_balance_table(df_loop)
+create_economic_summary_table(df_loop)
+plot_results(start_time, end_time, df_loop)
