@@ -682,6 +682,119 @@ def plot_results(start_time, end_time, df):
     plt.show()
 
 
+def plot_cost_series(df):
+    """
+    Plot cost series for the reference and CAES case in a single figure with consistent colors.
+    """
+    fig, axes = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+
+    # 🎨 **Define Color Mapping**
+    colors = {
+        "total_cost": "black",
+        "grid_import": "gray",
+        "pv_feed_in": "orange",
+        "pv_self_use": "yellow",
+        "heat_earnings": "red",
+        "cold_earnings": "blue",
+        "compression_cost": "purple",
+        "expansion_cost": "green",
+    }
+
+    # 📊 **Plot Reference Costs**
+    ax = axes[0]
+    ax.plot(
+        df.index,
+        df["cost_grid_import_ref"].cumsum(),
+        label="Grid Import Costs (Reference)",
+        color=colors["grid_import"],
+    )
+    ax.plot(
+        df.index,
+        -df["pv_feed_in_earnings_ref"].cumsum(),
+        label="PV Feed-In Earnings (Reference)",
+        color=colors["pv_feed_in"],
+    )
+    ax.plot(
+        df.index,
+        -df["pv_self_use_earnings_ref"].cumsum(),
+        label="PV Self-Use Earnings (Reference)",
+        color=colors["pv_self_use"],
+    )
+    ax.plot(
+        df.index,
+        df["total_cost_ref"].cumsum(),
+        label="Total Costs (Reference)",
+        color=colors["total_cost"],
+        linewidth=1.5,
+    )
+
+    ax.set_ylabel("Costs [€]")
+    ax.set_title("Reference Case Costs")
+    ax.legend()
+
+    # 📊 **Plot CAES Costs**
+    ax = axes[1]
+    ax.plot(
+        df.index,
+        df["cost_grid_import_caes"].cumsum(),
+        label="Grid Import Costs (CAES)",
+        color=colors["grid_import"],
+    )
+    ax.plot(
+        df.index,
+        -df["pv_feed_in_earnings_caes"].cumsum(),
+        label="PV Feed-In Earnings (CAES)",
+        color=colors["pv_feed_in"],
+    )
+    ax.plot(
+        df.index,
+        -df["pv_self_use_earnings_caes"].cumsum(),
+        label="PV Self-Use Earnings (CAES)",
+        color=colors["pv_self_use"],
+    )
+    ax.plot(
+        df.index,
+        -df["heat_earnings_caes"].cumsum(),
+        label="Heat Earnings (CAES)",
+        color=colors["heat_earnings"],
+    )
+    ax.plot(
+        df.index,
+        -df["cold_earnings_caes"].cumsum(),
+        label="Cold Earnings (CAES)",
+        color=colors["cold_earnings"],
+    )
+    ax.plot(
+        df.index,
+        (df["compression_power"] * converter_costs / 100).cumsum(),
+        label="Compression Costs (CAES)",
+        color=colors["compression_cost"],
+    )
+    ax.plot(
+        df.index,
+        (df["expansion_power"] * converter_costs / 100).cumsum(),
+        label="Expansion Costs (CAES)",
+        color=colors["expansion_cost"],
+    )
+    ax.plot(
+        df.index,
+        df["total_cost_caes"].cumsum(),
+        label="Total Costs (Net) (CAES)",
+        color=colors["total_cost"],
+        linewidth=1.5,
+    )
+
+    ax.set_ylabel("Costs [€]")
+    ax.set_xlabel("Time")
+    ax.set_title("CAES Case Costs")
+    ax.legend()
+
+    # Formatting
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+
 def create_energy_balance_table(df):
     total_energy_in_ref = df["grid_import_ref"].sum() + df["pv"].sum()
     total_energy_out_ref = df["demand"].sum() + df["pv_feed_in_ref"].sum()
@@ -807,3 +920,4 @@ for label, df_l in dfs_to_evaluate:
     create_energy_balance_table(df_l)
     create_economic_summary_table(df_l)
     plot_results(start_time, end_time, df_l)
+    plot_cost_series(df_l)
