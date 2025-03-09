@@ -13,7 +13,7 @@ df = pd.read_excel(filename, engine="odf", sheet_name=0, header=1, dtype=str)
 df.columns = df.columns.str.strip()
 
 # Extract relevant columns (adjust based on actual column positions)
-df = df.loc[:, ["Datum.1", "Stunde.1", "Smartmeter", "Spotpreis", "Produktion Fronius"]]
+df = df.loc[:, ["Datum", "Stunde", "Smartmeter", "Spotpreis", "Produktion Fronius"]]
 
 # Rename columns for clarity
 df.columns = ["date", "hour", "consumption", "price", "pv"]
@@ -24,32 +24,28 @@ df["hour"] = pd.to_numeric(df["hour"], errors="coerce")
 # Convert `date` column - automatically detects format
 df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-# Create proper datetime index
+# Create proper datetime index in UTC (since "Datum" column is already UTC-based)
 df["datetime"] = df["date"] + pd.to_timedelta(df["hour"], unit="h")
 
-# Define Berlin timezone (MEZ/MESZ)
-tz_berlin = pytz.timezone("Europe/Berlin")
-
-# Localize to Berlin time (MEZ/MESZ)
-df["datetime"] = df["datetime"].dt.tz_localize(
-    tz_berlin, ambiguous="NaT", nonexistent="shift_forward"
-)
+# Explicitly set the timezone to UTC (ensures all timestamps are properly handled)
+df["datetime"] = df["datetime"].dt.tz_localize("UTC")
 
 df = df.set_index("datetime")
 
-print("df head: ", df.head())
+# show duplicate rows
+dup_rows = df.index.duplicated()
+if dup_rows.any():
+    print("duplicate rows: ", dup_rows.sum())
+    print(df[df.index.duplicated()])
+
+# print("df head: ", df.head())
 
 # Convert numeric values and from W to kW
-df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
-df["price"] = pd.to_numeric(df["price"], errors="coerce")
-df["pv"] = pd.to_numeric(df["pv"], errors="coerce")
-
-# Scale from W to kW
-df["consumption"] = df["consumption"] / 1000  # Now in kW
-df["pv"] = df["pv"] / 1000  # Now in kW
-
-# Convert spot prices from €/MWh to €c/kWh
-df["price"] = df["price"] / 1000 * 100  # Now in €c/kWh
+df["consumption"] = (
+    pd.to_numeric(df["consumption"], errors="coerce") / 1000
+)  # Now in kW
+df["price"] = pd.to_numeric(df["price"], errors="coerce") / 1000 * 100  # Now in €c/kWh
+df["pv"] = pd.to_numeric(df["pv"], errors="coerce") / 1000  # Now in kW
 
 # Compute correlation before scaling
 correlation_before = df[["consumption", "pv"]].corr()
@@ -185,9 +181,6 @@ def add_cold_price(df):
     weather_df = weather_df.rename(columns={"utc_timestamp": "datetime", "DE_temperature": "ambient_temp"})
     weather_df = weather_df[["datetime", "ambient_temp"]]
     weather_df["datetime"] = pd.to_datetime(weather_df["datetime"], format="%Y-%m-%dT%H%M%SZ")
-    weather_df["datetime"] = (
-        weather_df["datetime"].dt.tz_localize("UTC").dt.tz_convert(tz_berlin)
-    )
     weather_df = weather_df.set_index("datetime")
 
     # Filter for 2016 if available
@@ -198,28 +191,58 @@ def add_cold_price(df):
     # Resample to hourly data to match the main dataset
     weather_df = weather_df.resample("h").mean()
 
+    # Shift weather data from 2016 to 2024 (both leap years)
+    weather_df.index = weather_df.index + pd.DateOffset(years=8)
+
     # Merge weather data with main dataset
     df = df.merge(weather_df[["ambient_temp"]], how="left", left_index=True, right_index=True)
 
     # Define efficiency factor for realistic COP estimation
-    EFFICIENCY_FACTOR = 0.5
+    EFFICIENCY_FACTOR = 0.4
 
     # Function to calculate realistic COP
-    def calculate_real_cop(T_hot_C, T_cold_C=-20, eta=EFFICIENCY_FACTOR):
-        T_hot_K = T_hot_C + 273.15  # Convert to Kelvin
+    def calculate_real_cop(T_cold_C=-25, T_hot_C=25, eta=EFFICIENCY_FACTOR):
         T_cold_K = T_cold_C + 273.15  # Convert to Kelvin
+        T_hot_K = T_hot_C + 273.15  # Convert to Kelvin
         cop_carnot = T_cold_K / (T_hot_K - T_cold_K)
         return eta * cop_carnot  # Adjust for real-world efficiency
 
-    # Compute COP for each timestamp based on ambient temperature
-    df["COP_ambient"] = df["ambient_temp"].apply(lambda T: calculate_real_cop(T))
+    # Compute COP for each timestamp based on ambient temperature (condenser side + 2°C adjustment)
+    df["COP_ambient"] = df["ambient_temp"].apply(lambda T: calculate_real_cop(T_hot_C=T + 2))
     df["cold_temp"] = 3
-    df["COP_caes"] = df["cold_temp"].apply(lambda T: calculate_real_cop(T))
+    df["COP_caes"] = df["cold_temp"].apply(lambda T: calculate_real_cop(T_hot_C=T))
 
     # Compute cost savings per kWh of cold brine
     df["cold_price"] = (1 / df["COP_ambient"] - 1 / df["COP_caes"]) * df["price"]
+    # Set to zero for negative values
+    df["cold_price"] = df["cold_price"].clip(lower=0)
 
-add_cold_price(df)
+    # drop columns
+    df = df.drop(columns=["COP_ambient", "cold_temp", "COP_caes"])
+    return df
+
+df = add_cold_price(df)
+
+# add heat price
+df["heat_price"] = 7 # €c/kWh
+# set to zero during summer months
+df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), 0)
+
+# plot prices
+fig, ax = plt.subplots(figsize=(15, 5))
+ax.plot(df["price"], label="Electricity Price", color="blue")
+ax.plot(df["cold_price"], label="Cold Price", color="red")
+ax.plot(df["heat_price"], label="Heat Price", color="green")
+# ax.plot(df["ambient_temp"], label="Ambient Temperature", color="orange")
+# # plot cops
+# ax.plot(df["COP_ambient"], label="COP Ambient", color="purple")
+# ax.plot(df["COP_caes"], label="COP CAES", color="black")
+ax.set_title("Electricity, Cold and Heat Prices")
+ax.set_xlabel("Time")
+ax.set_ylabel("Price [€c/kWh]")
+ax.legend()
+ax.grid()
+plt.show()
 
 # Save cleaned data for use in oemof
 df.to_csv("data.csv")

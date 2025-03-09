@@ -7,7 +7,7 @@ from pyomo.opt import SolverFactory
 from tabulate import tabulate
 
 # Set to True to enable non-simultaneity constraints
-switch_non_simultaneity = False
+switch_non_simultaneity = True
 
 
 def get_data():
@@ -53,8 +53,8 @@ df = get_data()
 feed_in_price = 14  # €cent/kWh
 pv_consumption_compensation = 0 # 28.74  # €cent/kWh
 factor = 0.4
-heat_price = 7  # €cent/kWh
-cold_price = df["price"] - 4  # €cent/kWh
+heat_price = df["heat_price"]  # €cent/kWh
+cold_price = df["cold_price"]  # €cent/kWh
 peak_threshold = 60  # kW
 peak_cost = 20000  # €c/kW
 converter_costs = 0.1  # €c/kWh 0.1 is quite high
@@ -216,17 +216,7 @@ def apply_non_simultaneity_constraints(model, compression_converter, expansion_c
 apply_non_simultaneity_constraints(model, compression_converter, expansion_converter, b_air, enable=switch_non_simultaneity)
 
 
-# solver = SolverFactory("cbc")
-# solver.options["threads"] = 8
-# Relax the optimality gap to 5% or 10%
-# solver.options["ratioGap"] = 0.1  # or 5%, meaning a 5% gap is acceptable
-
-# results = solver.solve(model, tee=True)
-# model.solutions.load_from(results)
-# print("Solver Status:", results.solver.status)
-# print("Termination Condition:", results.solver.termination_condition)
-
-# model.solve(solver="cbc", solve_kwargs={"tee": True})
+# Solve the optimization model
 model.solve(solver="cbc", solve_kwargs={"tee": True, "options": {"ratioGap": 0.1}})
 
 # Extract results
@@ -239,7 +229,6 @@ results = solph.processing.results(model)
 meta_results = solph.processing.meta_results(model)
 
 # Convert results to DataFrame for analysis
-# storage_flows = solph.processing.results(model)["storage"]["sequences"]
 storage_flows = results[(storage, None)]["sequences"]
 
 # Save results
@@ -274,11 +263,8 @@ def preprocess_caes(df, results):
     df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
     return df
 
+
 def save_preprocessed_df(df):
-    # filename = input("Enter the filename to save the preprocessed dataframe: ")
-    # if filename:
-    #     filename = "results/" + filename + ".csv"
-    # else:
     filename = "results/results.csv"
     df.to_csv(filename)
 

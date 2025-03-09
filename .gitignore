@@ -1,4 +1,5 @@
 /venv/*
+/opsd-weather_data-2020-09-16/*
 *.csv
 *.ods
 *.xlsx
