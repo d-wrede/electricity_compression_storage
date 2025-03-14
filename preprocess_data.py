@@ -93,7 +93,7 @@ def find_best_scale(df, scale_range=(1, 30), step=0.5):
 
 
 # Run the function
-# df, best_scale, results = find_best_scale(df, scale_range=(1, 30), step=0.5)
+# df, best_scale, results = find_best_scale(df, scale_range=(1, 30), step=0.2)
 best_scale = 8
 df["pv"] = df["pv"] * best_scale
 df["demand"] = df["consumption"] + df["pv"]
@@ -224,13 +224,13 @@ def add_cold_price(df):
 df = add_cold_price(df)
 
 # add heat price
-df["heat_price"] = 7 # €c/kWh
+df["heat_price"] = 7 # €cent/kWh
 # set to zero during summer months
 df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), 0)
 
 # plot prices
 fig, ax = plt.subplots(figsize=(15, 5))
-ax.plot(df["price"], label="Electricity Price", color="blue")
+# ax.plot(df["price"], label="Electricity Price", color="blue")
 ax.plot(df["cold_price"], label="Cold Price", color="red")
 ax.plot(df["heat_price"], label="Heat Price", color="green")
 # ax.plot(df["ambient_temp"], label="Ambient Temperature", color="orange")

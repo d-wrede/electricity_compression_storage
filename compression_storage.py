@@ -7,7 +7,7 @@ from pyomo.opt import SolverFactory
 from tabulate import tabulate
 
 # Set to True to enable non-simultaneity constraints
-switch_non_simultaneity = True
+non_simultaneity = False
 
 
 def get_data():
@@ -51,8 +51,7 @@ df = get_data()
 
 # Define a constant feed-in price in €/Wh
 feed_in_price = 14  # €cent/kWh
-pv_consumption_compensation = 0 # 28.74  # €cent/kWh
-factor = 0.4
+pv_consumption_compensation = 14.1 # 28.74  # €cent/kWh
 heat_price = df["heat_price"]  # €cent/kWh
 cold_price = df["cold_price"]  # €cent/kWh
 peak_threshold = 60  # kW
@@ -213,7 +212,7 @@ def apply_non_simultaneity_constraints(model, compression_converter, expansion_c
         )
 
 # Apply the non-simultaneity constraints
-apply_non_simultaneity_constraints(model, compression_converter, expansion_converter, b_air, enable=switch_non_simultaneity)
+apply_non_simultaneity_constraints(model, compression_converter, expansion_converter, b_air, enable=non_simultaneity)
 
 
 # Solve the optimization model
@@ -239,8 +238,8 @@ print(meta_results)
 print(storage_flows.head())
 
 # Define start and end time for the plot
-start_time = "2024-05-01"
-end_time = "2024-05-16"
+start_time = "2024-01-01"
+end_time = "2024-12-31"
 
 def preprocess_ref(df):
     df["grid_import_ref"] = (df["demand"] - df["pv"]).clip(lower=0)
@@ -533,7 +532,7 @@ def evaluate_economic_impact(df, results):
         )
 
 
-def plot_results(start_time, end_time, df):
+def plot_hourly_resolution_energy_flows(start_time, end_time, df):
     # PLOTTING
     fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
@@ -665,7 +664,7 @@ def plot_results(start_time, end_time, df):
     axes[1].set_xlabel("Time")
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
 
 def plot_cost_series(df):
@@ -778,7 +777,7 @@ def plot_cost_series(df):
     # Formatting
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.show()
+    # plt.show()
 
 
 def create_energy_balance_table(df):
@@ -835,13 +834,26 @@ def create_energy_balance_table(df):
 
 
 def create_economic_summary_table(df):
-    peak_cost_ref = df["grid_import_ref"].max() * peak_cost / 100
-    cost_peak_caes = df["grid_import_caes"].max() * peak_cost / 100
+    """
+    Create a summary table for the economic impact of the CAES system.
+    """
+    def define_peak_costs(df, column):
+        peak_time = df[column].idxmax()
+        peak_cost_value = df[column].max() * peak_cost / 100
+        column_name = "peak_cost_" + column.split("_")[-1]
+        df[column_name] = 0
+        df.at[peak_time, column_name] = peak_cost_value
+
+    define_peak_costs(df, "grid_import_ref")
+    define_peak_costs(df, "grid_import_caes")
+
+    df["compression_cost"] = df["compression_power"] * converter_costs / 100
+    df["expansion_cost"] = df["expansion_power"] * converter_costs / 100
 
     economics_data = {
         "Reference [€]": [
             df["cost_grid_import_ref"].sum(),
-            peak_cost_ref,
+            df["peak_cost_ref"].sum(),
             -df["pv_feed_in_earnings_ref"].sum(),
             -df["pv_self_use_earnings_ref"].sum(),
             0,
@@ -852,13 +864,13 @@ def create_economic_summary_table(df):
         ],
         "CAES [€]": [
             df["cost_grid_import_caes"].sum(),
-            cost_peak_caes,
+            df["peak_cost_caes"].sum(),
             -df["pv_feed_in_earnings_caes"].sum(),
             -df["pv_self_use_earnings_caes"].sum(),
             -df["heat_earnings_caes"].sum(),
             -df["cold_earnings_caes"].sum(),
-            df["compression_power"].sum() * converter_costs / 100,
-            df["expansion_power"].sum() * converter_costs / 100,
+            df["compression_cost"].sum(),
+            df["expansion_cost"].sum(),
             df["total_cost_caes"].sum(),
         ],
     }
@@ -885,6 +897,194 @@ def create_economic_summary_table(df):
     print(tabulate(economics_df, headers="keys", tablefmt="fancy_grid", floatfmt=".2f"))
 
 
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def plot_energy_economics(
+    df,
+    ref_columns,
+    caes_columns,
+    resolution="monthly",
+    plot_type="energy",
+    stacked=True,
+):
+    """
+    Generalized function to plot energy or economic data over time for both Reference and CAES scenarios.
+
+    Parameters:
+    - df: Pandas DataFrame with a DateTime index
+    - ref_columns: List of column names for the Reference scenario
+    - caes_columns: List of column names for the CAES scenario
+    - resolution: "yearly", "monthly", or "daily"
+    - plot_type: "energy" or "costs"
+    - stacked: Whether to use stacked bars (ignored for daily line plots)
+    """
+
+    # Resample data based on the chosen resolution
+    if resolution == "yearly":
+        df_resampled_ref = df[ref_columns].resample("Y").sum()
+        df_resampled_caes = df[caes_columns].resample("Y").sum()
+        xlabel = "Year"
+    elif resolution == "monthly":
+        df_resampled_ref = df[ref_columns].resample("M").sum()
+        df_resampled_caes = df[caes_columns].resample("M").sum()
+        xlabel = "Month"
+    elif resolution == "daily":
+        df_resampled_ref = df[ref_columns].resample("D").sum()
+        df_resampled_caes = df[caes_columns].resample("D").sum()
+        xlabel = "Day"
+    else:
+        raise ValueError(
+            "Invalid resolution. Choose from 'yearly', 'monthly', 'daily'."
+        )
+
+    # Convert index to string format for better readability on x-axis
+    df_resampled_ref.index = df_resampled_ref.index.strftime("%Y-%m-%d")
+    df_resampled_caes.index = df_resampled_caes.index.strftime("%Y-%m-%d")
+
+    # Define color mapping for consistency
+    colors = {
+        "grid_import": "gray",
+        "pv_feed_in": "orange",
+        "pv_self_use": "yellow",
+        "heat_earnings": "red",
+        "cold_earnings": "blue",
+        "compression_cost": "purple",
+        "expansion_cost": "green",
+        "total_cost": "black",
+    }
+    colors_equal = {
+        "demand": "blue",
+        "pv": "orange",
+        "price": "black",
+    }
+
+    # Assign colors based on variable names
+    ref_colors = [colors[col.split("_")[-1]] for col in ref_columns]
+    caes_colors = [colors[col.split("_")[-1]] for col in caes_columns]
+
+    # Plot settings
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Set plot type: Bar plot for yearly/monthly, Line plot for daily
+    if resolution == "daily":
+        df_resampled_ref.plot(
+            kind="line",
+            ax=ax,
+            linestyle="dotted",
+            alpha=0.7,
+            label=[f"Ref - {col}" for col in ref_columns],
+            color=ref_colors,
+        )
+        df_resampled_caes.plot(
+            kind="line",
+            ax=ax,
+            linestyle="-",
+            label=[f"CAES - {col}" for col in caes_columns],
+            color=caes_colors,
+        )
+    else:
+        # Create separate bars for Ref and CAES
+        x = np.arange(len(df_resampled_ref.index))  # X locations
+        width = 0.4  # Bar width
+
+        # Plot Reference bars
+        df_resampled_ref.plot(
+            kind="bar",
+            ax=ax,
+            stacked=stacked,
+            alpha=0.7,
+            position=1,
+            width=width,
+            label=[f"Ref - {col}" for col in ref_columns],
+            color=ref_colors,
+        )
+
+        # Plot CAES bars
+        df_resampled_caes.plot(
+            kind="bar",
+            ax=ax,
+            stacked=stacked,
+            alpha=0.9,
+            position=0,
+            width=width,
+            label=[f"CAES - {col}" for col in caes_columns],
+            color=caes_colors,
+        )
+
+    # Formatting
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Energy [kWh]" if plot_type == "energy" else "Costs [€]")
+    ax.set_title(
+        f"{'Stacked' if stacked else 'Unstacked'} {resolution.capitalize()} {plot_type.capitalize()} Summary"
+    )
+    ax.legend(loc="best")
+    plt.xticks(rotation=45)
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+
+    # Show the plot at the end of the script
+    plt.tight_layout()
+
+
+def plot_results(df):
+    """
+    Plot all relevant results for the CAES model.
+    """
+    # Control the order of visualization
+    plot_hourly_resolution_energy_flows(start_time, end_time, df_l)
+    plot_cost_series(df_l)
+
+    # plot yearly, monthly, daily energy flows
+    ref_columns = ["demand", "pv", "pv_feed_in_ref", "grid_import_ref"]
+    caes_columns = [
+        "demand",
+        "pv",
+        "pv_feed_in_caes",
+        "grid_import_caes",
+        "compression_power",
+        "expansion_power",
+        "heat_output",
+        "cold_output",
+    ]
+    for resolution in ["yearly", "monthly", "daily"]:
+        plot_energy_economics(
+            df,
+            ref_columns,
+            caes_columns,
+            resolution=resolution,
+            plot_type="energy",
+            stacked=True,
+        )
+
+    # plot yearly, monthly, daily cost flows
+    ref_columns = [
+        "cost_grid_import_ref",
+        "peak_cost_ref",
+        "pv_feed_in_earnings_ref",
+        "pv_self_use_earnings_ref",
+    ]
+    caes_columns = [
+        "cost_grid_import_caes",
+        "peak_cost_caes",
+        "pv_feed_in_earnings_caes",
+        "pv_self_use_earnings_caes",
+        "heat_earnings_caes",
+        "cold_earnings_caes",
+        "compression_cost",
+        "expansion_cost",
+    ]
+    for resolution in ["yearly", "monthly", "daily"]:
+        plot_energy_economics(
+            df,
+            ref_columns,
+            caes_columns,
+            resolution=resolution,
+            plot_type="costs",
+            stacked=True,
+        )
+
+
 dfs_to_evaluate = []
 
 # Preprocess results without recalculation
@@ -893,17 +1093,20 @@ df_original = preprocess_caes(df.copy(), results)
 dfs_to_evaluate.append(("Optimization Results", df_original))
 
 # Add recalculated results if recalculation is switched off (LP case)
-if not switch_non_simultaneity:
-    df_recalculated = recalculate_compression_expansion(df.copy(), results)
-    dfs_to_evaluate.append(("Recalculated (SOC-based)", df_recalculated))
+# if not non_simultaneity:
+#     df_recalculated = recalculate_compression_expansion(df.copy(), results)
+#     dfs_to_evaluate.append(("Recalculated (SOC-based)", df_recalculated))
 
 # Process and visualize all prepared DataFrames
-for label, df_l in dfs_to_evaluate:
-    print(f"\n🔹 Evaluating: {label}")
-    save_preprocessed_df(df_l)
-    validate_caes_model(df_l, results)
-    evaluate_economic_impact(df_l, results)
-    create_energy_balance_table(df_l)
-    create_economic_summary_table(df_l)
-    plot_results(start_time, end_time, df_l)
-    plot_cost_series(df_l)
+# for label, df_l in dfs_to_evaluate:
+df_l = df_original
+label = "Optimization Results"
+print(f"\n🔹 Evaluating: {label}")
+save_preprocessed_df(df_l)
+validate_caes_model(df_l, results)
+evaluate_economic_impact(df_l, results)
+create_energy_balance_table(df_l)
+create_economic_summary_table(df_l)
+
+plot_results(df_l)
+plt.show()
