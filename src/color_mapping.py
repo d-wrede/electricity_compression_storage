@@ -19,8 +19,12 @@ def assign_color(col, equal_dict, mapping):
 # Define color mappings
 colors = {
     "grid_import": "gray",
-    "pv_feed_in": "orange",
+    "cost_grid_import": "gray",
+    "peak_cost": "gray",
+    "pv_feed_in": "gray",
+    "pv_feed_in_earnings": "gray",
     "pv_self_use": "yellow",
+    "pv_self_use_earnings": "yellow",
     "heat_earnings": "red",
     "cold_earnings": "blue",
     "compression_cost": "purple",
@@ -53,12 +57,12 @@ caes_columns_energy = [
 ]
 
 # Assign colors for energy flows
-ref_colors_energy = [
-    assign_color(col, colors_equal, colors) for col in ref_columns_energy
-]
-caes_colors_energy = [
-    assign_color(col, colors_equal, colors) for col in caes_columns_energy
-]
+# ref_colors_energy = [
+#     assign_color(col, colors_equal, colors) for col in ref_columns_energy
+# ]
+# caes_colors_energy = [
+#     assign_color(col, colors_equal, colors) for col in caes_columns_energy
+# ]
 
 # For cost flows:
 ref_columns_cost = [
@@ -67,6 +71,7 @@ ref_columns_cost = [
     "pv_feed_in_earnings_ref",
     "pv_self_use_earnings_ref",
 ]
+
 caes_columns_cost = [
     "cost_grid_import_caes",
     "peak_cost_caes",
@@ -78,7 +83,21 @@ caes_columns_cost = [
     "expansion_cost",
 ]
 
-ref_colors_cost = [assign_color(col, colors_equal, colors) for col in ref_columns_cost]
-caes_colors_cost = [
-    assign_color(col, colors_equal, colors) for col in caes_columns_cost
-]
+ref_columns = ref_columns_energy + ref_columns_cost
+caes_columns = caes_columns_energy + caes_columns_cost
+
+# ref_colors_cost = [assign_color(col, colors_equal, colors) for col in ref_columns_cost]
+# caes_colors_cost = [
+#     assign_color(col, colors_equal, colors) for col in caes_columns_cost
+# ]
+
+
+def assign_colors_to_columns(columns):
+    """
+    Returns a list of colors for the given columns based on the mapping rules.
+    """
+    return [assign_color(col, colors_equal, colors) for col in columns]
+
+
+if __name__ == "__main__":
+    pass

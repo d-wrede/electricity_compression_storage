@@ -1,10 +1,14 @@
+import numpy as np
 import pandas as pd
 import oemof.solph as solph
 import matplotlib.pyplot as plt
 import sys
+import re
 from pyomo.environ import Var, ConstraintList, Binary
 from pyomo.opt import SolverFactory
 from tabulate import tabulate
+from src.color_mapping import assign_colors_to_columns
+
 
 # Set to True to enable non-simultaneity constraints
 non_simultaneity = False
@@ -51,7 +55,7 @@ df = get_data()
 
 # Define a constant feed-in price in €/Wh
 feed_in_price = 14  # €cent/kWh
-pv_consumption_compensation = 14.1 # 28.74  # €cent/kWh
+pv_consumption_compensation = 14.1  # 28.74  # €cent/kWh
 heat_price = df["heat_price"]  # €cent/kWh
 cold_price = df["cold_price"]  # €cent/kWh
 peak_threshold = 60  # kW
@@ -96,7 +100,12 @@ energy_system.add(excess_sink)
 
 # Grid source with variable electricity prices
 el_source = solph.components.Source(
-    label="el_source", outputs={b_el: solph.flows.Flow(nominal_value=peak_threshold, variable_costs=df["price"]*1.2)}
+    label="el_source",
+    outputs={
+        b_el: solph.flows.Flow(
+            nominal_value=peak_threshold, variable_costs=df["price"] * 1.2
+        )
+    },
 )
 energy_system.add(el_source)
 
@@ -131,7 +140,9 @@ energy_system.add(storage)
 # Compression Process: Electricity → Compressed Air + Heat
 compression_converter = solph.components.Converter(
     label="compression_converter",
-    inputs={b_el: solph.flows.Flow(nominal_value=100, variable_costs=converter_costs)},  # Max input power 100 kW
+    inputs={
+        b_el: solph.flows.Flow(nominal_value=100, variable_costs=converter_costs)
+    },  # Max input power 100 kW
     outputs={
         b_air: solph.flows.Flow(nominal_value=100),  # Storing compressed air
         b_heat: solph.flows.Flow(nominal_value=90),  # Extracting heat
@@ -139,7 +150,7 @@ compression_converter = solph.components.Converter(
     conversion_factors={
         b_air: 1,  # 100 kWh of electricity goes into 100 kWh compressed air
         b_heat: 0.9,  # 90 kWh heat extracted during compression
-    }
+    },
 )
 energy_system.add(compression_converter)
 
@@ -174,7 +185,10 @@ energy_system.add(cold_sink)
 # Create and solve the optimization model
 model = solph.Model(energy_system)
 
-def apply_non_simultaneity_constraints(model, compression_converter, expansion_converter, b_air, enable=True):
+
+def apply_non_simultaneity_constraints(
+    model, compression_converter, expansion_converter, b_air, enable=True
+):
     if not enable:
         return
 
@@ -202,8 +216,7 @@ def apply_non_simultaneity_constraints(model, compression_converter, expansion_c
     for t in time_keys:
         # Constraint: If non_simul_mode[t] is 1, compression flow can be up to M, but expansion must be 0.
         model.non_simul_constraints.add(
-            model.flow[compression_converter, b_air, t]
-            <= M * model.non_simul_mode[t]
+            model.flow[compression_converter, b_air, t] <= M * model.non_simul_mode[t]
         )
         # Constraint: If non_simul_mode[t] is 0, expansion flow can be up to M, but compression must be 0.
         model.non_simul_constraints.add(
@@ -211,8 +224,11 @@ def apply_non_simultaneity_constraints(model, compression_converter, expansion_c
             <= M * (1 - model.non_simul_mode[t])
         )
 
+
 # Apply the non-simultaneity constraints
-apply_non_simultaneity_constraints(model, compression_converter, expansion_converter, b_air, enable=non_simultaneity)
+apply_non_simultaneity_constraints(
+    model, compression_converter, expansion_converter, b_air, enable=non_simultaneity
+)
 
 
 # Solve the optimization model
@@ -241,11 +257,13 @@ print(storage_flows.head())
 start_time = "2024-01-01"
 end_time = "2024-12-31"
 
+
 def preprocess_ref(df):
     df["grid_import_ref"] = (df["demand"] - df["pv"]).clip(lower=0)
     df["pv_feed_in_ref"] = (df["pv"] - df["demand"]).clip(lower=0)
     df["pv_self_use_ref"] = df["pv"] - df["pv_feed_in_ref"]
     return df
+
 
 def preprocess_caes(df, results):
     # Transfer all relevant caes result flows into df columns.
@@ -253,12 +271,22 @@ def preprocess_caes(df, results):
         results[(el_source, b_el)]["sequences"]["flow"]
         + results[(el_peak_source, b_el)]["sequences"]["flow"]
     ).loc[df.index]
-    df["pv_feed_in_caes"] = results[(b_pv, excess_sink)]["sequences"]["flow"].loc[df.index]
+    df["pv_feed_in_caes"] = results[(b_pv, excess_sink)]["sequences"]["flow"].loc[
+        df.index
+    ]
     df["pv_self_use_caes"] = df["pv"] - df["pv_feed_in_caes"]
-    df["compression_power"] = results[(b_el, compression_converter)]["sequences"]["flow"].loc[df.index]
-    df["expansion_power"] = results[(expansion_converter, b_el)]["sequences"]["flow"].loc[df.index]
-    df["heat_output"] = results[(compression_converter, b_heat)]["sequences"]["flow"].loc[df.index]
-    df["cold_output"] = results[(expansion_converter, b_cold)]["sequences"]["flow"].loc[df.index]
+    df["compression_power"] = results[(b_el, compression_converter)]["sequences"][
+        "flow"
+    ].loc[df.index]
+    df["expansion_power"] = results[(expansion_converter, b_el)]["sequences"][
+        "flow"
+    ].loc[df.index]
+    df["heat_output"] = results[(compression_converter, b_heat)]["sequences"][
+        "flow"
+    ].loc[df.index]
+    df["cold_output"] = results[(expansion_converter, b_cold)]["sequences"]["flow"].loc[
+        df.index
+    ]
     df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
     return df
 
@@ -285,9 +313,9 @@ def recalculate_compression_expansion(df, results):
         lower=0
     )  # Only positive changes = compression
     expansion_efficiency = 0.4
-    df["expansion_power"] = -soc_change.clip(
-        upper=0
-    )  * expansion_efficiency  # Only negative changes = expansion
+    df["expansion_power"] = (
+        -soc_change.clip(upper=0) * expansion_efficiency
+    )  # Only negative changes = expansion
 
     # Compute heat and cold outputs
     heat_output_efficiency = 0.9  # heat recovery from compression
@@ -351,7 +379,9 @@ def validate_caes_model(df, results):
         ), "⚠️ Total energy consumption should increase with CAES"
 
         # 3️⃣ PV link flow is always positive
-        assert df["pv_self_use_caes"].min() >= 0, "⚠️ PV link flow should always be positive"
+        assert (
+            df["pv_self_use_caes"].min() >= 0
+        ), "⚠️ PV link flow should always be positive"
 
         # 4️⃣ Only PV should feed the excess sink
         pv_production = results[(pv, b_pv)]["sequences"]["flow"]
@@ -361,12 +391,8 @@ def validate_caes_model(df, results):
         ).min() >= 0, "⚠️ Only PV should feed the excess sink"
 
         # 5️⃣ Stored compressed air should match expanded air
-        b_air_in_series = results[(compression_converter, b_air)]["sequences"][
-            "flow"
-        ]
-        b_air_out_series = results[(b_air, expansion_converter)]["sequences"][
-            "flow"
-        ]
+        b_air_in_series = results[(compression_converter, b_air)]["sequences"]["flow"]
+        b_air_out_series = results[(b_air, expansion_converter)]["sequences"]["flow"]
         assert (
             b_air_in_series.sum() - b_air_out_series.sum() < 1e-3
         ), "⚠️ Stored air does not match expanded air"
@@ -388,7 +414,7 @@ def validate_caes_model(df, results):
         # Cold output should be 40% of b_air_out_series
         assert (
             abs(cold_output / b_air_out_series.sum() - 0.4) < 1e-3
-                ), "⚠️ Cold output ratio incorrect"
+        ), "⚠️ Cold output ratio incorrect"
         assert (
             abs(cold_output - expansion_energy) < 1e-3
         ), "⚠️ Cold output ratio incorrect"
@@ -403,7 +429,12 @@ def validate_caes_model(df, results):
 
         # 9️⃣ PV self-consumption plus feed-in should match PV production
         assert (
-            abs(df["pv_self_use_caes"].sum() + df["pv_feed_in_caes"].sum() - df["pv"].sum()) < 1e-3
+            abs(
+                df["pv_self_use_caes"].sum()
+                + df["pv_feed_in_caes"].sum()
+                - df["pv"].sum()
+            )
+            < 1e-3
         ), "⚠️ PV self-consumption and feed-in mismatch"
 
         #  🔟 **Balance Calculation: Energy Inputs vs. Outputs**
@@ -837,6 +868,7 @@ def create_economic_summary_table(df):
     """
     Create a summary table for the economic impact of the CAES system.
     """
+
     def define_peak_costs(df, column):
         peak_time = df[column].idxmax()
         peak_cost_value = df[column].max() * peak_cost / 100
@@ -897,17 +929,12 @@ def create_economic_summary_table(df):
     print(tabulate(economics_df, headers="keys", tablefmt="fancy_grid", floatfmt=".2f"))
 
 
-import matplotlib.pyplot as plt
-import numpy as np
-
-
 def plot_energy_economics(
     df,
     ref_columns,
     caes_columns,
     resolution="monthly",
-    plot_type="energy",
-    stacked=True,
+    plot_type="energy"
 ):
     """
     Generalized function to plot energy or economic data over time for both Reference and CAES scenarios.
@@ -921,18 +948,43 @@ def plot_energy_economics(
     - stacked: Whether to use stacked bars (ignored for daily line plots)
     """
 
+    def adjust_columns_for_plotting(df, subtract_columns):
+        df_adj = df.copy()
+        for col in df_adj.columns:
+            # Remove _caes or _ref if present
+            base_col = re.sub(r"(_caes|_ref)$", "", col)  # Remove ONLY full suffixes
+            print("base_col: ", base_col)
+
+            # flip sign for relevant columns
+            if base_col in subtract_columns or "earning" in col:
+                df_adj[col] = -df_adj[col]
+            # if "earning" in col:
+            #     df_adj[col] = -df_adj[col]
+        return df_adj
+
+    # Example usage:
+    subtract_columns = [
+        "demand", 
+        "compression_power", 
+        "pv_feed_in_earnings", 
+        "pv_self_use_earnings",
+        "heat_earnings", 
+        "cold_earnings"
+    ]
+    df_plot = adjust_columns_for_plotting(df, subtract_columns)
+
     # Resample data based on the chosen resolution
     if resolution == "yearly":
-        df_resampled_ref = df[ref_columns].resample("Y").sum()
-        df_resampled_caes = df[caes_columns].resample("Y").sum()
+        df_resampled_ref = df_plot[ref_columns].resample("Y").sum()
+        df_resampled_caes = df_plot[caes_columns].resample("Y").sum()
         xlabel = "Year"
     elif resolution == "monthly":
-        df_resampled_ref = df[ref_columns].resample("M").sum()
-        df_resampled_caes = df[caes_columns].resample("M").sum()
+        df_resampled_ref = df_plot[ref_columns].resample("M").sum()
+        df_resampled_caes = df_plot[caes_columns].resample("M").sum()
         xlabel = "Month"
     elif resolution == "daily":
-        df_resampled_ref = df[ref_columns].resample("D").sum()
-        df_resampled_caes = df[caes_columns].resample("D").sum()
+        df_resampled_ref = df_plot[ref_columns].resample("D").sum()
+        df_resampled_caes = df_plot[caes_columns].resample("D").sum()
         xlabel = "Day"
     else:
         raise ValueError(
@@ -943,81 +995,96 @@ def plot_energy_economics(
     df_resampled_ref.index = df_resampled_ref.index.strftime("%Y-%m-%d")
     df_resampled_caes.index = df_resampled_caes.index.strftime("%Y-%m-%d")
 
-    # Define color mapping for consistency
-    colors = {
-        "grid_import": "gray",
-        "pv_feed_in": "orange",
-        "pv_self_use": "yellow",
-        "heat_earnings": "red",
-        "cold_earnings": "blue",
-        "compression_cost": "purple",
-        "expansion_cost": "green",
-        "total_cost": "black",
-    }
-    colors_equal = {
-        "demand": "blue",
-        "pv": "orange",
-        "price": "black",
-    }
-
-    # Assign colors based on variable names
-    ref_colors = [colors[col.split("_")[-1]] for col in ref_columns]
-    caes_colors = [colors[col.split("_")[-1]] for col in caes_columns]
+    # Define colors for the Reference and CAES columns
+    ref_colors = assign_colors_to_columns(ref_columns)
+    caes_colors = assign_colors_to_columns(caes_columns)
 
     # Plot settings
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Set plot type: Bar plot for yearly/monthly, Line plot for daily
-    if resolution == "daily":
-        df_resampled_ref.plot(
-            kind="line",
-            ax=ax,
-            linestyle="dotted",
-            alpha=0.7,
-            label=[f"Ref - {col}" for col in ref_columns],
-            color=ref_colors,
-        )
-        df_resampled_caes.plot(
-            kind="line",
-            ax=ax,
-            linestyle="-",
-            label=[f"CAES - {col}" for col in caes_columns],
-            color=caes_colors,
-        )
-    else:
-        # Create separate bars for Ref and CAES
-        x = np.arange(len(df_resampled_ref.index))  # X locations
-        width = 0.4  # Bar width
+    # Set plot type: Bar plot for yearly, monthly, and daily resolutions
+    x = np.arange(len(df_resampled_ref.index))  # X locations
+    width = 0.4  # Bar width
 
-        # Plot Reference bars
-        df_resampled_ref.plot(
-            kind="bar",
-            ax=ax,
-            stacked=stacked,
-            alpha=0.7,
-            position=1,
-            width=width,
-            label=[f"Ref - {col}" for col in ref_columns],
-            color=ref_colors,
-        )
+    def plot_stacked_bars(ax, x, width, df_resampled, columns, colors, label_prefix, shift):
+        """
+        Plots stacked bar charts with separate handling for positive and negative values.
 
-        # Plot CAES bars
-        df_resampled_caes.plot(
-            kind="bar",
-            ax=ax,
-            stacked=stacked,
-            alpha=0.9,
-            position=0,
-            width=width,
-            label=[f"CAES - {col}" for col in caes_columns],
-            color=caes_colors,
-        )
+        Parameters:
+        - ax: Matplotlib axis object.
+        - x: Array of x positions.
+        - width: Bar width.
+        - df_resampled: Resampled DataFrame for plotting.
+        - columns: Columns to plot.
+        - colors: Assigned colors for columns.
+        - label_prefix: "Ref" or "CAES" for labeling.
+        - shift: X shift for bar alignment.
+        """
+
+        # Initialize cumulative sums for stacking
+        cumulative_pos = np.zeros(len(df_resampled))  # Tracks positive stacking
+        cumulative_neg = np.zeros(len(df_resampled))  # Tracks negative stacking
+
+        # Plot bars
+        for i, col in enumerate(columns):
+            values = df_resampled[col].values  # Extract column values
+
+            # Determine where values are positive and negative
+            pos_values = np.where(values > 0, values, 0)
+            neg_values = np.where(values < 0, values, 0)
+
+            # Plot positive values stacked on cumulative_pos (add legend only for first stacked element)
+            ax.bar(
+                [j + shift for j in x],
+                pos_values,
+                width,
+                bottom=cumulative_pos,
+                label=f"{label_prefix} - {col}",
+                color=colors[i] if i < len(colors) else "black",
+            )
+
+            # Plot negative values stacked on cumulative_neg
+            ax.bar(
+                [j + shift for j in x],
+                neg_values,
+                width,
+                bottom=cumulative_neg,
+                # label=f"{label_prefix} - {col}" if i == 0 else None,
+                color=colors[i] if i < len(colors) else "black",
+            )
+
+            # Update cumulative sums
+            cumulative_pos += pos_values
+            cumulative_neg += neg_values  # These are negative, so they stack downward
+
+        # Set vertical offset for labels
+        offset = 0.5
+
+        # **Add Labels Above Stacked Bars**
+        for i, x_pos in enumerate(x):
+            total_value = cumulative_pos[i] if cumulative_pos[i] > 0 else cumulative_neg[i]
+            ax.text(
+                x_pos + shift,
+                total_value + offset,  # Place label above top of stacked bar
+                label_prefix,
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
+
+    # Plot bars for Reference and CAES columns
+    plot_stacked_bars(ax, x, width, df_resampled_ref, ref_columns, ref_colors, "Ref", shift=+width)
+    plot_stacked_bars(ax, x, width, df_resampled_caes, caes_columns, caes_colors, "CAES", shift=0)
+
+    ax.set_xticks([j + width/2 for j in x])
+    ax.set_xticklabels(df_resampled_ref.index, rotation=45)
 
     # Formatting
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Energy [kWh]" if plot_type == "energy" else "Costs [€]")
     ax.set_title(
-        f"{'Stacked' if stacked else 'Unstacked'} {resolution.capitalize()} {plot_type.capitalize()} Summary"
+        f"Stacked {resolution.capitalize()} {plot_type.capitalize()} Summary"
     )
     ax.legend(loc="best")
     plt.xticks(rotation=45)
@@ -1053,8 +1120,7 @@ def plot_results(df):
             ref_columns,
             caes_columns,
             resolution=resolution,
-            plot_type="energy",
-            stacked=True,
+            plot_type="energy"
         )
 
     # plot yearly, monthly, daily cost flows
@@ -1080,8 +1146,7 @@ def plot_results(df):
             ref_columns,
             caes_columns,
             resolution=resolution,
-            plot_type="costs",
-            stacked=True,
+            plot_type="costs"
         )
 
 
