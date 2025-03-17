@@ -18,13 +18,13 @@ def assign_color(col, equal_dict, mapping):
 
 # Define color mappings
 colors = {
-    "grid_import": "gray",
+    "grid_import": "dimgray",
     "cost_grid_import": "gray",
-    "peak_cost": "gray",
-    "pv_feed_in": "gray",
-    "pv_feed_in_earnings": "gray",
-    "pv_self_use": "yellow",
-    "pv_self_use_earnings": "yellow",
+    "peak_cost": "darkgray",
+    "pv_feed_in": "goldenrod",
+    "pv_feed_in_earnings": "goldenrod",
+    "pv_self_use": "orange",
+    "pv_self_use_earnings": "orange",
     "heat_earnings": "red",
     "cold_earnings": "blue",
     "compression_cost": "purple",

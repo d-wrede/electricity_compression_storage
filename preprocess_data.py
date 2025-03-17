@@ -47,10 +47,18 @@ df["consumption"] = (
 df["price"] = pd.to_numeric(df["price"], errors="coerce") / 1000 * 100  # Now in €c/kWh
 df["pv"] = pd.to_numeric(df["pv"], errors="coerce") / 1000  # Now in kW
 
+def calc_price(df):
+    add_on_price = 13.08 # €cent/kWh
+    MwSt = 0.19
+    df["price"] = df["price"] + add_on_price
+    df["price"] = df["price"] * (1 + MwSt)
+    return df
+
+df = calc_price(df)
+
 # Compute correlation before scaling
 correlation_before = df[["consumption", "pv"]].corr()
 print("Correlation before scaling:\n", correlation_before)
-
 
 def find_best_scale(df, scale_range=(1, 30), step=0.5):
     lowest_correlation = {"scale": 0, "correlation": 1}
@@ -94,7 +102,10 @@ def find_best_scale(df, scale_range=(1, 30), step=0.5):
 
 # Run the function
 # df, best_scale, results = find_best_scale(df, scale_range=(1, 30), step=0.2)
-best_scale = 8
+# best_scale = 8
+# the sum of pv feed-in should be 119.669 kWh
+best_scale = 119_669 / df["pv"].sum()
+print("best scale is: ", best_scale)
 df["pv"] = df["pv"] * best_scale
 df["demand"] = df["consumption"] + df["pv"]
 
@@ -155,7 +166,7 @@ def negative_demand_days(df):
     ax.grid()
 
     plt.show()
-# negative_demand_days(df)
+negative_demand_days(df)
 
 # Drop redundant columns
 df = df[["demand", "price", "pv"]]
@@ -224,7 +235,7 @@ def add_cold_price(df):
 df = add_cold_price(df)
 
 # add heat price
-df["heat_price"] = 7 # €cent/kWh
+df["heat_price"] = 9.5 # €cent/kWh
 # set to zero during summer months
 df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), 0)
 
