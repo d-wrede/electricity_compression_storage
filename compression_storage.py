@@ -13,6 +13,36 @@ from src.color_mapping import assign_colors_to_columns
 # Set to True to enable non-simultaneity constraints
 non_simultaneity = True
 
+# Define column names for reference and CAES results
+ref_energy_columns = ["demand", "pv", "pv_feed_in_ref", "grid_import_ref"]
+caes_energy_columns = [
+    "demand",
+    "pv",
+    "pv_feed_in_caes",
+    "grid_import_caes",
+    "compression_power",
+    "expansion_power",
+    "heat_output",
+    "cold_output",
+]
+
+ref_cost_columns = [
+    "cost_grid_import_ref",
+    "peak_cost_ref",
+    "pv_feed_in_earnings_ref",
+    "pv_self_use_earnings_ref",
+]
+caes_cost_columns = [
+    "cost_grid_import_caes",
+    "peak_cost_caes",
+    "pv_feed_in_earnings_caes",
+    "pv_self_use_earnings_caes",
+    "heat_earnings_caes",
+    "cold_earnings_caes",
+    "compression_cost",
+    "expansion_cost",
+]
+
 
 def get_data():
     # Load time series data (assuming you have a CSV file with datetime index)
@@ -53,13 +83,13 @@ def get_data():
 df = get_data()
 
 # Define a constant feed-in price in €/Wh
-feed_in_price = 28.74  # €cent/kWh
-pv_consumption_compensation = (12 + 16.38)/2  # €cent/kWh
+feed_in_price = 0 # 28.74  # €cent/kWh
+pv_consumption_compensation = 0  #16.38 #(12 + 16.38)/2  # €cent/kWh
 heat_price = df["heat_price"]  # €cent/kWh
 cold_price = df["cold_price"]  # €cent/kWh
-peak_threshold = 300  # kW
-peak_cost = 20000  # €c/kW
-converter_costs = 0.1  # €c/kWh
+peak_threshold = 200  # kW
+peak_cost = 20000*0  # €c/kW
+converter_costs = 0  # €c/kWh
 
 # Create an energy system
 energy_system = solph.EnergySystem(timeindex=df.index)
@@ -600,48 +630,140 @@ def calculate_monthly_storage_stats(soc_series):
 
     # Assume full capacity is the maximum SOC value
     storage_capacity = soc_series.max()
+    print("storage_capacity: ", storage_capacity)
 
     monthly_stats = []
-    for month, soc in soc_series.resample("M"):
+    for month, soc in soc_series.resample("ME"):
         if soc.empty:
             continue
 
         # Count full & partial cycles using the simple sum-based method
-        cycles = calculate_storage_cycles_simple(soc, storage_capacity) * 10
+        cycles = calculate_storage_cycles_simple(soc, storage_capacity)
 
         # Calculate active hours (time with non-zero SOC change)
         active_hours = (soc.diff().abs() > 0).sum()
 
         # Calculate average monthly depth of discharge (DOD)
-        dod_values = soc.diff().abs().dropna()
-        avg_dod = dod_values.mean() if not dod_values.empty else 0
+        # dod_values = soc.diff().abs().dropna()
+        # avg_dod = dod_values.mean() if not dod_values.empty else 0
 
         monthly_stats.append(
             {
                 "month": month,
                 "usage_cycles": cycles,
                 "active_hours": active_hours,
-                "avg_dod": avg_dod,
+                # "avg_dod": avg_dod,
             }
         )
         # print
         print(f"Month: {month.strftime('%B %Y')}")
         print(f"  - Full Cycles: {cycles:.2f}")
         print(f"  - Active Hours: {active_hours}")
-        print(f"  - Avg. DOD: {avg_dod:.2f} kWh")
+        # print(f"  - Avg. DOD: {avg_dod:.2f} kWh")
+
+    # total cycles
+    total_cycles = sum([entry["usage_cycles"] for entry in monthly_stats])
+    print(f"Total Cycles: {total_cycles:.2f}")
 
     storage_stats = pd.DataFrame(monthly_stats).set_index("month")
     return storage_stats
 
 
+# --- Align Zero Levels ---
+def align_zero_levels(ax1, ax2):
+    # Get limits
+    power_min, power_max = ax1.get_ylim()
+    price_min, price_max = ax2.get_ylim()
+
+    if power_min == 0 or price_min == 0:
+        return  # Avoid division by zero issues
+
+    power_ratio = power_max / power_min
+    price_ratio = price_max / price_min
+
+    if power_ratio < price_ratio:
+        price_max = price_min * power_ratio
+    else:
+        price_min = price_max / power_ratio
+
+    ax1.set_ylim(power_min, power_max)
+    ax2.set_ylim(price_min, price_max)
+    
+
+def plot_hourly_resolution_energy_flows_ref(start_time, end_time, df):
+    """
+    Plot hourly energy flows for the Reference scenario only.
+    """
+    # Set up figure (using same gridspec for consistency)
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+
+    # Define the reference columns (example)
+    ref_columns = ["demand", "pv", "pv_feed_in_ref", "grid_import_ref"]
+    ref_colors = assign_colors_to_columns(ref_columns)
+
+    # Resample data if needed; here we assume df is already hourly.
+    df_cut = df.loc[start_time:end_time]
+
+    # Plot each reference column using the external color mapping
+    for i, col in enumerate(ref_columns):
+        ax1.plot(
+            df_cut.index,
+            df_cut[col],
+            label=f"Ref - {col}",
+            color=ref_colors[i] if i < len(ref_colors) else "black",
+        )
+
+    ax1.set_xlabel("Time")
+    ax1.set_ylabel("Power [kW]")
+    ax1.set_title("Hourly Energy Flows - Reference Scenario")
+    ax1.legend(loc="upper left")
+
+    # Add secondary axis for price
+    ax2 = ax1.twinx()
+    # df_cut = df.loc[start_time:end_time]
+    ax2.plot(
+        df_cut.index,
+        df_cut["price"],
+        label="Electricity Price",
+        color="black",
+        linestyle="dotted",
+    )
+    ax2.set_ylabel("Price [€cent/kWh]")
+    ax2.legend(loc="upper right")
+
+    # align_zero_levels(ax1, ax2)
+
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    # plt.show()
+
+
 def plot_hourly_resolution_energy_flows(start_time, end_time, df):
+
+    # Define colors for the Reference and CAES columns
+    # ref_colors = assign_colors_to_columns(ref_energy_columns)
+    caes_colors = assign_colors_to_columns(caes_energy_columns)
+    # create a dictionary with the columns and colors
+    columns_colors = dict(zip(caes_energy_columns, caes_colors))
+
+    # caes_energy_columns = [
+    #     "demand",
+    #     "pv",
+    #     "pv_feed_in_caes",
+    #     "grid_import_caes",
+    #     "compression_power",
+    #     "expansion_power",
+    #     "heat_output",
+    #     "cold_output",
+    # ]
+
     # PLOTTING
     # fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
     fig, axes = plt.subplots(
         2, 1, figsize=(12, 8), sharex=True, gridspec_kw={"height_ratios": [2, 1]}
     )
 
-    # First subplot: demand, PV, Price, Battery Power
+    # First subplot: demand, PV, Price, CAES Power
     ax1 = axes[0]
     grid_import = df["grid_import_caes"]
     max_grid_import = grid_import.max()
@@ -689,21 +811,21 @@ def plot_hourly_resolution_energy_flows(start_time, end_time, df):
     expansion_power = df_cut["expansion_power"]
 
     ax1.axhline(peak_threshold, color="red", linestyle="dashed")
-    ax1.plot(demand_results.index, demand_results, label="Demand", color="blue")
-    ax1.plot(pv_results.index, pv_results, label="PV Production", color="orange")
+    ax1.plot(demand_results.index, demand_results, label="Demand", color=columns_colors["demand"])
+    ax1.plot(pv_results.index, pv_results, label="PV Production", color=columns_colors["pv"])
 
     grid_import_cut = grid_import.loc[start_time:end_time]
-    ax1.plot(grid_import_cut.index, grid_import_cut, label="Grid Import", color="black")
+    ax1.plot(grid_import_cut.index, grid_import_cut, label="Grid Import", color=columns_colors["grid_import_caes"])
 
-    ax1.plot(grid_export.index, -grid_export, label="Grid Export", color="gray")
+    ax1.plot(grid_export.index, -grid_export, label="Grid Export", color=columns_colors["pv_feed_in_caes"])
     ax1.plot(
         compression_power.index,
         -compression_power,
         label="Compression Power",
-        color="purple",
+        color=columns_colors["compression_power"],
     )
     ax1.plot(
-        expansion_power.index, expansion_power, label="Expansion Power", color="green"
+        expansion_power.index, expansion_power, label="Expansion Power", color=columns_colors["expansion_power"]
     )
 
     # pv_link_flow = results[(pv_link, b_el)]["sequences"]["flow"]
@@ -730,38 +852,18 @@ def plot_hourly_resolution_energy_flows(start_time, end_time, df):
     ax2.set_ylabel("Price [€cent/kWh]")
     ax2.legend(loc="upper right")
 
-    # --- Align Zero Levels ---
-    def align_zero_levels(ax1, ax2):
-        # Get limits
-        power_min, power_max = ax1.get_ylim()
-        price_min, price_max = ax2.get_ylim()
-
-        if power_min == 0 or price_min == 0:
-            return  # Avoid division by zero issues
-
-        power_ratio = power_max / power_min
-        price_ratio = price_max / price_min
-
-        if power_ratio < price_ratio:
-            price_max = price_min * power_ratio
-        else:
-            price_min = price_max / power_ratio
-
-        ax1.set_ylim(power_min, power_max)
-        ax2.set_ylim(price_min, price_max)
-
     align_zero_levels(ax1, ax2)
 
-    ax1.set_title("Energy demand, PV Production, Battery Power, and Electricity Price")
+    ax1.set_title("Energy demand, PV Production, CAES Power, and Electricity Price")
 
     # Second subplot: State of Charge (SOC)
     ax3 = axes[1]
-    ax3.plot(df_cut.index, df_cut["soc"], label="Battery SOC", color="purple")
+    ax3.plot(df_cut.index, df_cut["soc"], label="CAES SOC", color="purple")
     ax3.set_ylabel("State of Charge [kWh]")
-    ax3.axhline(0, color="gray", linestyle="dashed")  # Horizontal helper line for SOC
+    # ax3.axhline(0, color="gray", linestyle="dashed")  # Horizontal helper line for SOC
     # ax3.spines["left"].set_position(("data", 0))  # Move y-axis to cross x-axis at zero
     ax3.legend()
-    ax3.set_title("Battery State of Charge")
+    ax3.set_title("CAES State of Charge")
 
     # Align y-axis zero levels
     ax1.set_ylim(min(ax1.get_ylim()[0], 0), ax1.get_ylim()[1])
@@ -1050,12 +1152,12 @@ def plot_energy_economics(
 
     # Resample data based on the chosen resolution
     if resolution == "yearly":
-        df_resampled_ref = df_plot[ref_columns].resample("Y").sum()
-        df_resampled_caes = df_plot[caes_columns].resample("Y").sum()
+        df_resampled_ref = df_plot[ref_columns].resample("YE").sum()
+        df_resampled_caes = df_plot[caes_columns].resample("YE").sum()
         xlabel = "Year"
     elif resolution == "monthly":
-        df_resampled_ref = df_plot[ref_columns].resample("M").sum()
-        df_resampled_caes = df_plot[caes_columns].resample("M").sum()
+        df_resampled_ref = df_plot[ref_columns].resample("ME").sum()
+        df_resampled_caes = df_plot[caes_columns].resample("ME").sum()
         xlabel = "Month"
     elif resolution == "daily":
         df_resampled_ref = df_plot[ref_columns].resample("D").sum()
@@ -1168,7 +1270,7 @@ def plot_energy_economics(
     ax.set_title(
         f"Stacked {resolution.capitalize()} {plot_type.capitalize()} Summary"
     )
-    ax.legend(loc="best")
+    ax.legend(loc="center left", bbox_to_anchor=(1, 0.5))
     plt.xticks(rotation=45)
     plt.grid(axis="y", linestyle="--", alpha=0.7)
 
@@ -1185,30 +1287,30 @@ def plot_storage_usage_stats(storage_stats):
     """
 
     fig, ax1 = plt.subplots(figsize=(12, 6))
-
-    # Bar plot for storage usage and active hours
-    storage_stats[["usage_cycles", "active_hours"]].plot(
-        kind="bar", ax=ax1, width=0.6, position=1, color=["blue", "gray"]
+    storage_stats[["usage_cycles"]].plot(
+        kind="bar",
+        ax=ax1,
+        width=0.4,
+        position=1,
+        color=["blue"],
+        label="Full Cycles",
     )
+    ax1.set_ylim(0, None)
 
-    # Secondary y-axis for Depth of Discharge (DOD)
+    # Secondary y-axis for active hours
     ax2 = ax1.twinx()
-    ax2.plot(
-        storage_stats.index,
-        storage_stats["avg_dod"],
-        marker="o",
-        linestyle="-",
-        color="red",
-        label="Avg DOD",
+    storage_stats[["active_hours"]].plot(
+        kind="bar", ax=ax2, color=["red"], label="Active Hours", width=0.4, position=0,
     )
+    ax2.set_ylim(0, None)
 
     # Formatting
     ax1.set_xlabel("Month")
-    ax1.set_ylabel("Count / Hours")
-    ax2.set_ylabel("Depth of Discharge [kWh]")
-    ax1.set_title("Monthly Storage Usage & Depth of Discharge (Full Year)")
+    ax1.set_ylabel("Cycles / Month")
+    ax2.set_ylabel("Active Hours")
+    ax1.set_title("Monthly Storage Cycles & Active hours (Full Year)")
 
-    ax1.legend(["Usage Count", "Active Hours"], loc="upper left")
+    ax1.legend(loc="upper left")
     ax2.legend(loc="upper right")
 
     # Show only "YYYY-MM" format on x-axis for better readability
@@ -1223,57 +1325,34 @@ def plot_results(df):
     Plot all relevant results for the CAES model.
     """
     # Control the order of visualization
+    plot_hourly_resolution_energy_flows_ref(start_time, end_time, df)
     plot_hourly_resolution_energy_flows(start_time, end_time, df_l)
     plot_cost_series(df_l)
-
     # plot yearly, monthly, daily energy flows
-    ref_columns = ["demand", "pv", "pv_feed_in_ref", "grid_import_ref"]
-    caes_columns = [
-        "demand",
-        "pv",
-        "pv_feed_in_caes",
-        "grid_import_caes",
-        "compression_power",
-        "expansion_power",
-        "heat_output",
-        "cold_output",
-    ]
     for resolution in ["yearly", "monthly", "daily"]:
         plot_energy_economics(
             df,
-            ref_columns,
-            caes_columns,
+            ref_energy_columns,
+            caes_energy_columns,
             resolution=resolution,
             plot_type="energy"
         )
 
     # plot yearly, monthly, daily cost flows
-    ref_columns = [
-        "cost_grid_import_ref",
-        "peak_cost_ref",
-        "pv_feed_in_earnings_ref",
-        "pv_self_use_earnings_ref",
-    ]
-    caes_columns = [
-        "cost_grid_import_caes",
-        "peak_cost_caes",
-        "pv_feed_in_earnings_caes",
-        "pv_self_use_earnings_caes",
-        "heat_earnings_caes",
-        "cold_earnings_caes",
-        "compression_cost",
-        "expansion_cost",
-    ]
     for resolution in ["yearly", "monthly", "daily"]:
         plot_energy_economics(
             df,
-            ref_columns,
-            caes_columns,
+            ref_cost_columns,
+            caes_cost_columns,
             resolution=resolution,
             plot_type="costs"
         )
 
     # Plot storage usage statistics
+    # Compute stats for each month
+    storage_stats = calculate_monthly_storage_stats(df_l["soc"])
+    # Plot full year (aggregated per month)
+    plot_storage_usage_stats(storage_stats)
 
 
 dfs_to_evaluate = []
@@ -1299,10 +1378,5 @@ evaluate_economic_impact(df_l, results)
 create_energy_balance_table(df_l)
 create_economic_summary_table(df_l)
 
-# plot_results(df_l)
-# Compute stats for each month
-storage_stats = calculate_monthly_storage_stats(df_l["soc"])
-
-# Plot full year (aggregated per month)
-plot_storage_usage_stats(storage_stats)
+plot_results(df_l)
 plt.show()

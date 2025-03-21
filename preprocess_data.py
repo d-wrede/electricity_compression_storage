@@ -48,9 +48,12 @@ df["price"] = pd.to_numeric(df["price"], errors="coerce") / 1000 * 100  # Now in
 df["pv"] = pd.to_numeric(df["pv"], errors="coerce") / 1000  # Now in kW
 
 def calc_price(df):
-    add_on_price = 13.08 # €cent/kWh
-    MwSt = 0.19
-    df["price"] = df["price"] + add_on_price
+    scale_price = 3.16
+    scale_grid = 1.48
+    scale_taxes = 1.1
+    add_on_price = 13.08 * scale_grid # €cent/kWh
+    MwSt = 0.19 * scale_taxes
+    df["price"] = df["price"] * scale_price + add_on_price
     df["price"] = df["price"] * (1 + MwSt)
     return df
 
@@ -235,9 +238,10 @@ def add_cold_price(df):
 df = add_cold_price(df)
 
 # add heat price
-df["heat_price"] = 9.5 # €cent/kWh
+heat_price = 9.5 # €cent/kWh
+df["heat_price"] = heat_price
 # set to zero during summer months
-df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), 0)
+df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), heat_price * 0.5)
 
 # plot prices
 fig, ax = plt.subplots(figsize=(15, 5))
