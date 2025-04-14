@@ -19,7 +19,7 @@ def assign_color(col, equal_dict, mapping):
 # Define color mappings
 colors = {
     "grid_import": "darkgray",
-    "cost_grid_import": "gray",
+    "cost_grid_import": "darkgray",
     "peak_cost": "dimgray",
     "pv_feed_in": "goldenrod",
     "pv_feed_in_earnings": "goldenrod",
@@ -33,7 +33,7 @@ colors = {
 }
 
 colors_equal = {
-    "demand": "blue",
+    "demand": "dimgray",
     "pv": "orange",
     "price": "black",
     # only for caes:

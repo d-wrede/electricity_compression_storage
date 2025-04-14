@@ -45,19 +45,25 @@ df["consumption"] = (
     pd.to_numeric(df["consumption"], errors="coerce") / 1000
 )  # Now in kW
 df["price"] = pd.to_numeric(df["price"], errors="coerce") / 1000 * 100  # Now in €c/kWh
+# print price average
+print("price average: ", df["price"].mean())
 df["pv"] = pd.to_numeric(df["pv"], errors="coerce") / 1000  # Now in kW
 
 def calc_price(df):
-    scale_price = 3.16
-    scale_grid = 1.48
-    scale_taxes = 1.1
-    add_on_price = 13.08 * scale_grid # €cent/kWh
+    scale_price = 1
+    scale_grid = 1
+    scale_taxes = 1
+    add_on_price = 7.53 * scale_grid  # €cent/kWh  7.53 zu 13.08
     MwSt = 0.19 * scale_taxes
     df["price"] = df["price"] * scale_price + add_on_price
     df["price"] = df["price"] * (1 + MwSt)
     return df
 
 df = calc_price(df)
+print("price average: ", df["price"].mean())
+# print hours below 8.55 €cent/kWh
+hours_below = len(df[df["price"] < 8.55])
+print("hours below 8.55 €cent/kWh: ", hours_below, " hours. And ", hours_below / len(df) * 100, " %")
 
 # Compute correlation before scaling
 correlation_before = df[["consumption", "pv"]].corr()
@@ -168,7 +174,7 @@ def negative_demand_days(df):
     ax.legend()
     ax.grid()
 
-    plt.show()
+    # plt.show()
 negative_demand_days(df)
 
 # Drop redundant columns
@@ -184,6 +190,19 @@ df["demand"] = df["demand"].clip(lower=0)
 df["pv"] = df["pv"].clip(lower=0)
 
 print("length df is: ", len(df))
+
+
+def plot_cop_values(df):
+    fig, ax = plt.subplots(figsize=(15, 5))
+    ax.plot(df.index, df["COP_ambient_TK"], label="COP Ambient TK", color="blue")
+    ax.plot(df.index, df["COP_ambient_NK"], label="COP Ambient NK", color="cyan")
+    ax.plot(df.index, df["COP_caes_TK"], label="COP CAES TK", color="purple")
+    ax.plot(df.index, df["COP_caes_NK"], label="COP CAES NK", color="orange")
+    ax.set_title("Coefficient of Performance (COP) Values")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("COP")
+    ax.legend()
+    ax.grid()
 
 
 def add_cold_price(df):
@@ -212,30 +231,158 @@ def add_cold_price(df):
     df = df.merge(weather_df[["ambient_temp"]], how="left", left_index=True, right_index=True)
 
     # Define efficiency factor for realistic COP estimation
-    EFFICIENCY_FACTOR = 0.4
+    # def get_eta_for_target_cop(df, T_cold_C, column_name, target_mean_cop):
+    #     T_hot_K = df["ambient_temp"] + 2 + 273.15
+    #     T_cold_K = T_cold_C + 273.15
+    #     delta_T = T_hot_K - T_cold_K
+    #     # Vermeide Division durch Null
+    #     delta_T = delta_T.clip(lower=0.1)
+    #     cop_carnot = T_cold_K / delta_T
+    #     eta = target_mean_cop / cop_carnot.mean()
+    #     return eta
+
+    # eta_nk = get_eta_for_target_cop(
+    #     df, T_cold_C=0, column_name="ambient_temp", target_mean_cop=2.8
+    # )
+    # eta_tk = get_eta_for_target_cop(
+    #     df, T_cold_C=-27, column_name="ambient_temp", target_mean_cop=1.2
+    # )
+    # print("eta_nk: ", eta_nk)
+    # print("eta_tk: ", eta_tk)
 
     # Function to calculate realistic COP
-    def calculate_real_cop(T_cold_C=-25, T_hot_C=25, eta=EFFICIENCY_FACTOR):
+    def calculate_real_cop(T_cold_C=-25, T_hot_C=25, eta=1):
         T_cold_K = T_cold_C + 273.15  # Convert to Kelvin
         T_hot_K = T_hot_C + 273.15  # Convert to Kelvin
+        if T_cold_K > T_hot_K - 2:
+            T_hot_K = T_cold_K + 2  # Avoid division by zero
         cop_carnot = T_cold_K / (T_hot_K - T_cold_K)
+        # if cop_carnot > 500:
+        #     cop_carnot = 500
         return eta * cop_carnot  # Adjust for real-world efficiency
 
+    COP_MAX = 20
     # Compute COP for each timestamp based on ambient temperature (condenser side + 2°C adjustment)
-    df["COP_ambient"] = df["ambient_temp"].apply(lambda T: calculate_real_cop(T_hot_C=T + 2))
-    df["cold_temp"] = 3
-    df["COP_caes"] = df["cold_temp"].apply(lambda T: calculate_real_cop(T_hot_C=T))
+    df["COP_ambient_TK"] = df["ambient_temp"].apply(
+        lambda T: calculate_real_cop(T_cold_C=-27, T_hot_C=T + 2)
+    )
+    COP_ambient_TK_expected = 1.2  # Expected mean COP for TK
+    COP_ambient_TK_mean = df["COP_ambient_TK"].mean()
+    efficiency_factor_TK = COP_ambient_TK_expected / COP_ambient_TK_mean
+    df["COP_ambient_TK"] = df["COP_ambient_TK"] * efficiency_factor_TK
+    print("efficiency factor TK: ", efficiency_factor_TK)
+
+    df["COP_ambient_NK"] = (
+        df["ambient_temp"]
+        .apply(lambda T: calculate_real_cop(T_cold_C=0, T_hot_C=T + 2))
+        .clip(upper=COP_MAX)
+    )
+    COP_ambient_NK_expected = 2.8  # Expected mean COP for NK
+    COP_ambient_NK_mean = df["COP_ambient_NK"].mean()
+    efficiency_factor_NK = COP_ambient_NK_expected / COP_ambient_NK_mean
+    df["COP_ambient_NK"] = df["COP_ambient_NK"] * efficiency_factor_NK
+    print("efficiency factor NK: ", efficiency_factor_NK)
+
+    df["cold_temp"] = 3  # °C brine temperature (on condenser side)
+    df["COP_caes_TK"] = df["cold_temp"].apply(lambda T: calculate_real_cop(T_cold_C=-27, T_hot_C=T, eta=efficiency_factor_TK))
+    df["COP_caes_NK"] = (
+        df["cold_temp"]
+        .apply(
+            lambda T: calculate_real_cop(
+                T_cold_C=0, T_hot_C=T, eta=efficiency_factor_NK
+            )
+        )
+        .clip(upper=COP_MAX*efficiency_factor_NK)
+    )
 
     # Compute cost savings per kWh of cold brine
-    df["cold_price"] = (1 / df["COP_ambient"] - 1 / df["COP_caes"]) * df["price"]
+    df["cold_price_TK"] = (1 / df["COP_ambient_TK"] - 1 / df["COP_caes_TK"]) * df["price"]
+    df["cold_price_NK"] = (1 / df["COP_ambient_NK"] - 1 / df["COP_caes_NK"]) * df["price"]
     # Set to zero for negative values
-    df["cold_price"] = df["cold_price"].clip(lower=0)
+    df["cold_price_TK"] = df["cold_price_TK"].clip(lower=0)
+    df["cold_price_NK"] = df["cold_price_NK"].clip(lower=0)
 
     # drop columns
-    df = df.drop(columns=["COP_ambient", "cold_temp", "COP_caes"])
+    # df = df.drop(columns=["COP_ambient_TK", "COP_ambient_NK", "cold_temp", "COP_caes_TK", "COP_caes_NK"])
+    plot_cop_values(df)
     return df
 
 df = add_cold_price(df)
+
+
+def calculate_basement_temp(df):
+    T_ground = 10  # °C
+    T_ambient = df["ambient_temp"]
+    w = 0.5  # weight
+    df["T_basement"] = w * T_ground + (1 - w) * df["ambient_temp"]
+    # df["T_basement"] = df["T_basement"].clip(lower=0)
+    return df
+df = calculate_basement_temp(df)
+
+
+def calculate_cooling_demand(df):
+    T_NK = 5  # °C
+    T_TK = -18  # °C
+    df["T_diff_NK"] = df["T_basement"] - T_NK  # °C
+    df["T_diff_NK"] = df["T_diff_NK"].clip(lower=0)
+    df["T_diff_TK"] = df["T_basement"] - T_TK  # °C
+    df["T_diff_TK"] = df["T_diff_TK"].clip(lower=0)
+    Qyear_NK = 25_620  # kWh/a
+    Qyear_TK = 14_230  # kWh/a
+    # heat demand per hour is
+    # Phi = UA * deltaT
+    # We know deltaT, but we don't know UA
+    # So we can calculate UA from the yearly demand
+    yearly_diff_NK = df["T_diff_NK"].sum()
+    # UA = Qyear / yearly_diff
+    UA_NK = Qyear_NK / yearly_diff_NK
+    df["Q_demand_NK"] = UA_NK * df["T_diff_NK"]
+
+    yearly_diff_TK = df["T_diff_TK"].sum()
+    UA_TK = Qyear_TK / yearly_diff_TK
+    df["Q_demand_TK"] = UA_TK * df["T_diff_TK"]
+
+    print("UA_NK: ", UA_NK)
+    print("UA_TK: ", UA_TK)
+calculate_cooling_demand(df)
+
+
+def plot_temperature_and_demand(df):
+    """
+    Plots the basement temperature and the cooling demand on two vertical axes.
+    The left vertical axis shows temperatures and the right vertical axis shows cooling demand (kWh/h).
+    """
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+
+    # Plot temperatures on the left axis
+    ax1.plot(df.index, df["T_basement"], label="Basement Temperature", color="blue")
+    ax1.axhline(5, color="green", linestyle="--", label="NK Setpoint (5°C)")
+    ax1.axhline(-18, color="red", linestyle="--", label="TK Setpoint (-18°C)")
+    ax1.set_xlabel("Time")
+    ax1.set_ylabel("Temperature (°C)", color="blue")
+    ax1.tick_params(axis="y", labelcolor="blue")
+
+    # Create a second vertical axis for the cooling demand
+    ax2 = ax1.twinx()
+    ax2.plot(df.index, df["Q_demand_NK"], label="Cooling Demand NK", color="orange")
+    ax2.plot(df.index, df["Q_demand_TK"], label="Cooling Demand TK", color="purple")
+    ax2.set_ylabel("Cooling Demand (kWh/h)", color="orange")
+    ax2.tick_params(axis="y", labelcolor="orange")
+
+    # Combine legends from both axes
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper right")
+
+    plt.title("Basement Temperature and Cooling Demand")
+    plt.tight_layout()
+    # plt.show()
+
+
+# Example usage:
+# Assuming 'df' is your DataFrame with a DateTimeIndex and already contains the calculated fields.
+plot_temperature_and_demand(df)
+
 
 # add heat price
 heat_price = 9.5 # €cent/kWh
@@ -246,8 +393,9 @@ df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month
 # plot prices
 fig, ax = plt.subplots(figsize=(15, 5))
 # ax.plot(df["price"], label="Electricity Price", color="blue")
-ax.plot(df["cold_price"], label="Cold Price", color="red")
-ax.plot(df["heat_price"], label="Heat Price", color="green")
+ax.plot(df["cold_price_TK"], label="Cold Price TK", color="blue")
+ax.plot(df["cold_price_NK"], label="Cold Price NK", color="cyan")
+ax.plot(df["heat_price"], label="Heat Price", color="red")
 # ax.plot(df["ambient_temp"], label="Ambient Temperature", color="orange")
 # # plot cops
 # ax.plot(df["COP_ambient"], label="COP Ambient", color="purple")
@@ -257,13 +405,17 @@ ax.set_xlabel("Time")
 ax.set_ylabel("Price [€c/kWh]")
 ax.legend()
 ax.grid()
-plt.show()
+# plt.show()
 
 # Save cleaned data for use in oemof
 df.to_csv("data.csv")
 
 # print index
-print(df.index)
+# print(df.index)
+
+# print max pv production
+print("max pv production: ", df["pv"].max())
 
 # Display first rows
 print(df.head())
+plt.show()
