@@ -83,12 +83,12 @@ def get_data():
 df = get_data()
 
 # Define a constant feed-in price in €/Wh
-feed_in_price = 0 # 28.74  # €cent/kWh
-pv_consumption_compensation = 0  #16.38 #(12 + 16.38)/2  # €cent/kWh
+feed_in_price = 28.74  # €cent/kWh
+pv_consumption_compensation = 16.38 #(12 + 16.38)/2  # €cent/kWh
 heat_price = df["heat_price"]  # €cent/kWh
 cold_price = df["cold_price"]  # €cent/kWh
-peak_threshold = 200  # kW
-peak_cost = 20000*0  # €c/kW
+peak_threshold = 110  # kW
+peak_cost = 10  # €c/kW
 converter_costs = 0  # €c/kWh
 
 # Create an energy system
