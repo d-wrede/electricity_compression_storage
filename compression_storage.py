@@ -88,7 +88,7 @@ pv_consumption_compensation = 16.38 #(12 + 16.38)/2  # €cent/kWh
 heat_price = df["heat_price"]  # €cent/kWh
 cold_price = df["cold_price"]  # €cent/kWh
 peak_threshold = 110  # kW
-peak_cost = 10  # €c/kW
+peak_cost = 10.83  # €c/kW
 converter_costs = 0  # €c/kWh
 
 # Create an energy system

@@ -48,9 +48,9 @@ df["price"] = pd.to_numeric(df["price"], errors="coerce") / 1000 * 100  # Now in
 df["pv"] = pd.to_numeric(df["pv"], errors="coerce") / 1000  # Now in kW
 
 def calc_price(df):
-    scale_price = 3.16
-    scale_grid = 1.48
-    scale_taxes = 1.1
+    scale_price = 1
+    scale_grid = 1
+    scale_taxes = 1
     add_on_price = 13.08 * scale_grid # €cent/kWh
     MwSt = 0.19 * scale_taxes
     df["price"] = df["price"] * scale_price + add_on_price
