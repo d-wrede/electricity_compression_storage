@@ -301,6 +301,8 @@ def add_cold_price(df):
     # Set to zero for negative values
     df["cold_price_freezer"] = df["cold_price_freezer"].clip(lower=0)
     df["cold_price_chiller"] = df["cold_price_chiller"].clip(lower=0)
+    print("mean cold price chiller: ", df["cold_price_chiller"].mean())
+    print("mean cold price freezer: ", df["cold_price_freezer"].mean())
 
     # drop columns
     # df = df.drop(columns=["COP_ambient_freezer", "COP_ambient_chiller", "cold_temp", "COP_caes_freezer", "COP_caes_chiller"])

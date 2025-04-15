@@ -96,10 +96,12 @@ q_demand_freezer = df["Q_demand_freezer"]  # kWh/hour
 q_max_freezer = df["Q_demand_freezer"].max()
 cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
 cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
+print("cold_price_chiller avg: ", cold_price_chiller.mean())
+print("cold_price_freezer avg: ", cold_price_freezer.mean())
 peak_threshold = 150  # kW
 peak_cost = 10.83 * 100  # €c/kW 149.46 zu 10.83
 converter_costs = 0  # €c/kWh
-cold_storage_capacity = 50  # kWh
+cold_storage_capacity = 5000  # kWh
 
 # Create an energy system
 energy_system = solph.EnergySystem(timeindex=df.index)
@@ -1124,6 +1126,8 @@ def create_energy_balance_table(df):
             df["grid_import_ref"].sum(),
             None,
             None,
+            None,
+            None,
             total_energy_in_ref,
             total_energy_out_ref,
             total_energy_in_ref - total_energy_out_ref,
@@ -1135,6 +1139,8 @@ def create_energy_balance_table(df):
             df["grid_import_caes"].sum(),
             df["compression_power"].sum(),
             df["expansion_power"].sum(),
+            df["heat_output"].sum(),
+            df["cold_chiller"].sum() + df["cold_freezer"].sum(),
             total_energy_in_caes,
             total_energy_out_caes,
             total_energy_in_caes - total_energy_out_caes,
@@ -1148,8 +1154,10 @@ def create_energy_balance_table(df):
         "Grid Import",
         "Compression Energy",
         "Expansion Energy",
-        "Total Energy In",
-        "Total Energy Out",
+        "(Heat Used)",
+        "(Cold Used)",
+        "Total Electric Energy In",
+        "Total Electric Energy Out",
         "Energy Balance (In - Out)",
     ]
 
