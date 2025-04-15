@@ -96,8 +96,8 @@ q_demand_freezer = df["Q_demand_freezer"]  # kWh/hour
 q_max_freezer = df["Q_demand_freezer"].max()
 cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
 cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
-peak_threshold = 60  # kW
-peak_cost = 149.46 * 100  # €c/kW 149.46 zu 10.83
+peak_threshold = 150  # kW
+peak_cost = 10.83 * 100  # €c/kW 149.46 zu 10.83
 converter_costs = 0  # €c/kWh
 cold_storage_capacity = 50  # kWh
 
