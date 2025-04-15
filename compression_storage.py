@@ -556,7 +556,7 @@ def evaluate_economic_impact(df, results):
     )  # Convert to €
 
     df["heat_earnings_caes"] = df["heat_output"] * heat_price / 100
-    df["cold_earnings_caes"] = df["cold_output"] * (df["price"] - 5) / 100
+    df["cold_earnings_caes"] = df["cold_output"] * cold_price / 100
 
     df["total_cost_caes"] = (
         df["cost_grid_import_caes"]

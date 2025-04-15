@@ -231,6 +231,8 @@ def add_cold_price(df):
     # Set to zero for negative values
     df["cold_price"] = df["cold_price"].clip(lower=0)
 
+    print("mean cold price is: ", df["cold_price"].mean(), " €c/kWh")
+
     # drop columns
     df = df.drop(columns=["COP_ambient", "cold_temp", "COP_caes"])
     return df
