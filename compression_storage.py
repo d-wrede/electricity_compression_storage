@@ -24,7 +24,8 @@ caes_energy_columns = [
     "compression_power",
     "expansion_power",
     "heat_output",
-    "cold_output",
+    "cold_chiller",
+    "cold_freezer",
 ]
 
 ref_cost_columns = [
@@ -39,7 +40,8 @@ caes_cost_columns = [
     "pv_feed_in_earnings_caes",
     "pv_self_use_earnings_caes",
     "heat_earnings_caes",
-    "cold_earnings_caes",
+    "cold_earnings_chiller",
+    "cold_earnings_freezer",
     "compression_cost",
     "expansion_cost",
 ]
@@ -88,13 +90,16 @@ feed_in_price = 28.74  # €cent/kWh
 pv_consumption_compensation1 = 12  # €cent/kWh
 pv_consumption_compensation2 = 16.38  # €cent/kWh
 heat_price = df["heat_price"]  # €cent/kWh
-q_max_chiller = df["Q_demand_NK"]  # kWh/hour
-q_max_freezer = df["Q_demand_TK"]  # kWh/hour
-cold_price_chiller = df["cold_price_NK"]  # €cent/kWh
-cold_price_freezer = df["cold_price_TK"]  # €cent/kWh
+q_demand_chiller = df["Q_demand_chiller"]  # kWh/hour
+q_max_chiller = df["Q_demand_chiller"].max()
+q_demand_freezer = df["Q_demand_freezer"]  # kWh/hour
+q_max_freezer = df["Q_demand_freezer"].max()
+cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
+cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
 peak_threshold = 60  # kW
 peak_cost = 149.46 * 100  # €c/kW 149.46 zu 10.83
 converter_costs = 0  # €c/kWh
+cold_storage_capacity = 50  # kWh
 
 # Create an energy system
 energy_system = solph.EnergySystem(timeindex=df.index)
@@ -210,14 +215,14 @@ cold_storage = solph.components.GenericStorage(
     label="cold_storage",
     inputs={b_cold: solph.flows.Flow()},
     outputs={b_cold: solph.flows.Flow()},
-    nominal_storage_capacity=83,  # in kWh
-    initial_storage_level=1,  # for instance, starting full; adjust as needed
+    nominal_storage_capacity=cold_storage_capacity,  # in kWh
+    initial_storage_level=0.5,  # for instance, starting full; adjust as needed
     loss_rate=0.0,  # adjust if there are standing losses
     inflow_conversion_factor=1,
     outflow_conversion_factor=1,
     balanced=True,
 )
-energy_system.add(b_cold, cold_storage)
+energy_system.add(cold_storage)
 
 # sink for heat
 heat_sink = solph.components.Sink(
@@ -226,25 +231,27 @@ heat_sink = solph.components.Sink(
 energy_system.add(heat_sink)
 
 # Create two cold sinks
-# For freezer cooling (Tiefkühl / TK)
+# For freezer cooling
 cold_sink_freezer = solph.components.Sink(
     label="cold_sink_freezer",
     inputs={
         b_cold: solph.flows.Flow(
             variable_costs=-cold_price_freezer,
             nominal_value=q_max_freezer,
+            max=q_demand_freezer/q_max_freezer,
         )
     },
 )
 energy_system.add(cold_sink_freezer)
 
-# For chiller cooling (Niedrigkühl / NK)
+# For chiller cooling
 cold_sink_chiller = solph.components.Sink(
     label="cold_sink_chiller",
     inputs={
         b_cold: solph.flows.Flow(
             variable_costs=-cold_price_chiller,
             nominal_value=q_max_chiller,
+            max = q_demand_chiller/q_max_chiller,
         )
     },
 )
@@ -330,6 +337,16 @@ print(storage_flows.head())
 start_time = "2024-01-01"
 end_time = "2024-12-31"
 
+subtract_columns = [
+    "demand",
+    "compression_power",
+    "pv_feed_in_earnings",
+    "pv_self_use_earnings",
+    "heat_earnings",
+    "cold_earnings_chiller",
+    "cold_earnings_freezer",
+]
+
 
 def preprocess_ref(df):
     df["grid_import_ref"] = (df["demand"] - df["pv"]).clip(lower=0)
@@ -357,11 +374,13 @@ def preprocess_caes(df, results):
     df["heat_output"] = results[(compression_converter, b_heat)]["sequences"][
         "flow"
     ].loc[df.index]
-    df["cold_output"] = results[(b_cold, cold_sink_chiller)]["sequences"]["flow"].loc[
-        df.index
-    ] + results[(b_cold, cold_sink_freezer)]["sequences"]["flow"].loc[df.index]
+    # df["cold_output"] = results[(b_cold, cold_sink_chiller)]["sequences"]["flow"].loc[df.index] \
+    #     + results[(b_cold, cold_sink_freezer)]["sequences"]["flow"].loc[df.index]
+    df["cold_chiller"] = results[(b_cold, cold_sink_chiller)]["sequences"]["flow"].loc[df.index]
+    df["cold_freezer"] = results[(b_cold, cold_sink_freezer)]["sequences"]["flow"].loc[df.index]
     df["cold_waste"] = results[(b_cold, cold_sink)]["sequences"]["flow"].loc[df.index]
     df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
+    df["soc_cold"] = results[(cold_storage, None)]["sequences"]["storage_content"].loc[df.index]
     return df
 
 
@@ -396,7 +415,7 @@ def recalculate_compression_expansion(df, results):
     cold_output_efficiency = 0.4  # cooling output from expansion
 
     df["heat_output"] = df["compression_power"] * heat_output_efficiency
-    df["cold_output"] = df["expansion_power"] * cold_output_efficiency
+    # df["cold_output"] = df["expansion_power"] * cold_output_efficiency
 
     energy_balance = (
         df["pv"] + df["expansion_power"] - df["compression_power"] - df["demand"]
@@ -480,7 +499,11 @@ def validate_caes_model(df, results):
 
         # 7️⃣ Heat & Cold outputs should match expected ratios
         heat_output = df["heat_output"].sum()
-        cold_output = df["cold_output"].sum()
+        cold_output = (
+            df["cold_chiller"].sum()
+            + df["cold_freezer"].sum()
+            + df["cold_waste"].sum()
+        )
         print(f"cold output ratio: {cold_output / expansion_energy}")
         assert (
             abs(heat_output / compression_energy - 0.9) < 1e-3
@@ -610,13 +633,14 @@ def evaluate_economic_impact(df, results):
     print("expansion_power: ", df["expansion_power"].sum())
     # print("^difference: ", df["compression_power"].sum() - df["expansion_power"].sum())
     print("heat_output: ", df["heat_output"].sum())
-    print("cold_output: ", df["cold_output"].sum())
+    print("cold_chiller output: ", df["cold_chiller"].sum())
+    print("cold_freezer output: ", df["cold_freezer"].sum())
 
     # daily average and max cold output
-    daily_avg_cold_output = df["cold_output"].resample("D").sum().mean()
-    daily_max_cold_output = df["cold_output"].resample("D").sum().max()
-    print("daily average cold output: ", daily_avg_cold_output)
-    print("daily max cold output: ", daily_max_cold_output)
+    daily_avg_cold_output = df[["cold_chiller", "cold_freezer"]].resample("D").sum().mean().sum()
+    daily_max_cold_output = df[["cold_chiller", "cold_freezer"]].resample("D").sum().max().sum()
+    print("daily average cold used: ", daily_avg_cold_output)
+    print("daily max cold used: ", daily_max_cold_output)
 
     print("pv_self_use_caes: ", df["pv_self_use_caes"].sum())
 
@@ -634,7 +658,8 @@ def evaluate_economic_impact(df, results):
     )  # Convert to €
 
     df["heat_earnings_caes"] = df["heat_output"] * heat_price / 100
-    df["cold_earnings_caes"] = df["cold_output"] * (df["price"] - 5) / 100
+    df["cold_earnings_chiller"] = df["cold_chiller"] * cold_price_chiller / 100
+    df["cold_earnings_freezer"] = df["cold_freezer"] * cold_price_freezer / 100
 
     df["total_cost_caes"] = (
         df["cost_grid_import_caes"]
@@ -642,7 +667,8 @@ def evaluate_economic_impact(df, results):
         - df["pv_self_use_earnings_caes"]
         - df["pv_feed_in_earnings_caes"]
         - df["heat_earnings_caes"]
-        - df["cold_earnings_caes"]
+        - df["cold_earnings_chiller"]
+        - df["cold_earnings_freezer"]
     )
 
     # Economic impact of CAES
@@ -662,7 +688,8 @@ def evaluate_economic_impact(df, results):
     print(f"PV self-consumption increase: {df['pv_self_use_increase'].sum():.2f} kWh")
     print(f"PV feed-in revenue change: {df['pv_feed_in_difference'].sum():.2f} €")
     print(f"Heat earnings: {df['heat_earnings_caes'].sum():.2f} €")
-    print(f"Cold earnings: {df['cold_earnings_caes'].sum():.2f} €")
+    print(f"Cold earnings chiller: {df['cold_earnings_chiller'].sum():.2f} €")
+    print(f"Cold earnings freezer: {df['cold_earnings_freezer'].sum():.2f} €")
 
     # Warning if CAES increases cost instead of reducing it
     if df["cost_savings"].sum() < 0:
@@ -938,6 +965,7 @@ def plot_hourly_resolution_energy_flows(start_time, end_time, df):
     # Second subplot: State of Charge (SOC)
     ax3 = axes[1]
     ax3.plot(df_cut.index, df_cut["soc"], label="CAES SOC", color="purple")
+    ax3.plot(df_cut.index, df_cut["soc_cold"], label="Cold SOC", color="blue")
     ax3.set_ylabel("State of Charge [kWh]")
     # ax3.axhline(0, color="gray", linestyle="dashed")  # Horizontal helper line for SOC
     # ax3.spines["left"].set_position(("data", 0))  # Move y-axis to cross x-axis at zero
@@ -970,7 +998,8 @@ def plot_cost_series(df):
         "pv_feed_in": "goldenrod",
         "pv_self_use": "orange",
         "heat_earnings": "red",
-        "cold_earnings": "blue",
+        "cold_earnings_chiller": "blue",
+        "cold_earnings_freezer": "cyan",
         "compression_cost": "purple",
         "expansion_cost": "green",
     }
@@ -1035,9 +1064,15 @@ def plot_cost_series(df):
     )
     ax.plot(
         df.index,
-        -df["cold_earnings_caes"].cumsum(),
-        label="Cold Earnings (CAES)",
-        color=colors["cold_earnings"],
+        -df["cold_earnings_chiller"].cumsum(),
+        label="Cold Earnings Chiller (CAES)",
+        color=colors["cold_earnings_chiller"],
+    )
+    ax.plot(
+        df.index,
+        -df["cold_earnings_freezer"].cumsum(),
+        label="Cold Earnings Freezer (CAES)",
+        color=colors["cold_earnings_freezer"],
     )
     ax.plot(
         df.index,
@@ -1151,6 +1186,7 @@ def create_economic_summary_table(df):
             0,
             0,
             0,
+            0,
             df["total_cost_ref"].sum(),
         ],
         "CAES [€]": [
@@ -1159,7 +1195,8 @@ def create_economic_summary_table(df):
             -df["pv_feed_in_earnings_caes"].sum(),
             -df["pv_self_use_earnings_caes"].sum(),
             -df["heat_earnings_caes"].sum(),
-            -df["cold_earnings_caes"].sum(),
+            -df["cold_earnings_chiller"].sum(),
+            -df["cold_earnings_freezer"].sum(),
             df["compression_cost"].sum(),
             df["expansion_cost"].sum(),
             df["total_cost_caes"].sum(),
@@ -1174,7 +1211,8 @@ def create_economic_summary_table(df):
             "PV Feed-in Earnings",
             "PV Self-Consumption Earnings",
             "Heat Earnings",
-            "Cold Earnings",
+            "Cold Earnings Chiller",
+            "Cold Earnings Freezer",
             "Compression Costs",
             "Expansion Costs",
             "Total Costs (Net)",
@@ -1198,16 +1236,6 @@ def adjust_columns_for_plotting(df, subtract_columns):
         if base_col in subtract_columns or "earning" in col:
             df_adj[col] = -df_adj[col]
     return df_adj
-
-# Example usage:
-subtract_columns = [
-    "demand",
-    "compression_power",
-    "pv_feed_in_earnings",
-    "pv_self_use_earnings",
-    "heat_earnings",
-    "cold_earnings",
-]
 
 
 def plot_energy_economics(
@@ -1452,32 +1480,53 @@ def plot_storage_usage_stats(storage_stats):
 
 def plot_cold_output(df):
     """
-    Plot the cold output per day of the CAES system.
+    Plot the cold output per day of the CAES system with two vertical axes:
+    - Left axis (ax): cold outputs
+    - Right axis (ax2): cold prices
     """
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    # Plotting
-    # plot horizontal line at 84 kWh
-    ax.axhline(84, color="black", linestyle="--")
-    ax.text(
-        df.index[0],
-        84 + 3,
-        "Average Cold Demand per Day",
-        color="black",
-        fontsize=10,
-        fontweight="bold",
-        ha="left",
-    )
-    daily_cold_output = df["cold_output"].resample("D").sum()
-    ax.plot(daily_cold_output.index, daily_cold_output, label="Daily Cold Output", color="blue")
+    # Plot a horizontal line at 84 kWh
+    # ax.axhline(84, color="black", linestyle="--")
+    # ax.text(
+    #     df.index[0],
+    #     84 + 3,
+    #     "Average Cold Demand per Day",
+    #     color="black",
+    #     fontsize=10,
+    #     fontweight="bold",
+    #     ha="left",
+    # )
 
-    # Formatting
+    # Plot cold outputs on the first axis
+    ax.plot(
+        df.index, df["cold_waste"], label="Cold Waste Output", color="grey", alpha=0.5
+    )
+    ax.plot(df.index, df["cold_chiller"], label="Cold Chiller Output", color="blue")
+    ax.plot(df.index, q_demand_chiller, label="Cold Chiller Demand", color="purple")
+
+    ax.plot(df.index, df["cold_freezer"], label="Cold Freezer Output", color="cyan")
+    ax.plot(df.index, q_demand_freezer, label="Cold Freezer Demand", color="orange")
+
+    # Create a second y-axis for the cold prices
+    ax2 = ax.twinx()
+    # ax2.plot(df.index, df["cold_price_chiller"], label="Chiller Price", color="red")
+    # ax2.plot(df.index, df["cold_price_freezer"], label="Freezer Price", color="green")
+
+    # Axis labels and title
     ax.set_xlabel("Time")
     ax.set_ylabel("Cold Output [kWh]")
+    # ax2.set_ylabel("Cold Price")
     ax.set_title("CAES Cold Output per Day")
-    ax.legend()
+
+    # Combine legends from both axes
+    lines_1, labels_1 = ax.get_legend_handles_labels()
+    lines_2, labels_2 = ax2.get_legend_handles_labels()
+    ax2.legend(lines_1 + lines_2, labels_1 + labels_2, loc="upper left")
+
     plt.xticks(rotation=45)
     plt.tight_layout()
+    # plt.show()
 
 
 def plot_results(df):
@@ -1518,38 +1567,39 @@ def plot_results(df):
     plot_cold_output(df)
 
 
-dfs_to_evaluate = []
+if __name__ == "__main__":
+    dfs_to_evaluate = []
 
-# Preprocess results without recalculation
-df = preprocess_ref(df)
-df_original = preprocess_caes(df.copy(), results)
-dfs_to_evaluate.append(("Optimization Results", df_original))
+    # Preprocess results without recalculation
+    df = preprocess_ref(df)
+    df_original = preprocess_caes(df.copy(), results)
+    dfs_to_evaluate.append(("Optimization Results", df_original))
 
-# Add recalculated results if recalculation is switched off (LP case)
-# if not non_simultaneity:
-#     df_recalculated = recalculate_compression_expansion(df.copy(), results)
-#     dfs_to_evaluate.append(("Recalculated (SOC-based)", df_recalculated))
+    # Add recalculated results if recalculation is switched off (LP case)
+    # if not non_simultaneity:
+    #     df_recalculated = recalculate_compression_expansion(df.copy(), results)
+    #     dfs_to_evaluate.append(("Recalculated (SOC-based)", df_recalculated))
 
-# Process and visualize all prepared DataFrames
-# for label, df_l in dfs_to_evaluate:
-df_l = df_original
-label = "Optimization Results"
-print(f"\n🔹 Evaluating: {label}")
-save_preprocessed_df(df_l)
-validate_caes_model(df_l, results)
-evaluate_economic_impact(df_l, results)
-create_energy_balance_table(df_l)
-create_economic_summary_table(df_l)
+    # Process and visualize all prepared DataFrames
+    # for label, df_l in dfs_to_evaluate:
+    df_l = df_original
+    label = "Optimization Results"
+    print(f"\n🔹 Evaluating: {label}")
+    save_preprocessed_df(df_l)
+    validate_caes_model(df_l, results)
+    evaluate_economic_impact(df_l, results)
+    create_energy_balance_table(df_l)
+    create_economic_summary_table(df_l)
 
-# print_energy_economics(
-#     df_l, ref_energy_columns, caes_energy_columns, print_type="energy"
-#     )
+    # print_energy_economics(
+    #     df_l, ref_energy_columns, caes_energy_columns, print_type="energy"
+    #     )
 
-# print_energy_economics(
-#     df_l,
-#     ref_cost_columns,
-#     caes_cost_columns,
-#     print_type="costs")
+    # print_energy_economics(
+    #     df_l,
+    #     ref_cost_columns,
+    #     caes_cost_columns,
+    #     print_type="costs")
 
-plot_results(df_l)
-plt.show()
+    plot_results(df_l)
+    plt.show()

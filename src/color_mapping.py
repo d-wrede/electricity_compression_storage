@@ -26,7 +26,8 @@ colors = {
     "pv_self_use": "orange",
     "pv_self_use_earnings": "orange",
     "heat_earnings": "red",
-    "cold_earnings": "blue",
+    "cold_earnings_chiller": "blue",
+    "cold_earnings_freezer": "cyan",
     "compression_cost": "purple",
     "expansion_cost": "green",
     "total_cost": "black",
@@ -40,7 +41,8 @@ colors_equal = {
     "compression_power": "purple",
     "expansion_power": "green",
     "heat_output": "red",
-    "cold_output": "blue",
+    "cold_chiller": "blue",
+    "cold_freezer": "cyan",
 }
 
 # Example for energy flows:
@@ -53,7 +55,8 @@ caes_columns_energy = [
     "compression_power",
     "expansion_power",
     "heat_output",
-    "cold_output",
+    "cold_chiller",
+    "cold_freezer",
 ]
 
 # Assign colors for energy flows
