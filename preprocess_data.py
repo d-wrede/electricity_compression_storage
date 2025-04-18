@@ -8,52 +8,52 @@ from pathlib import Path
 # ────────────────────────────────
 # 1. Configuration
 # ────────────────────────────────
-CONFIG = configparser.ConfigParser()
-CONFIG.read("conf/config.ini", encoding="utf-8")
+CFG = configparser.ConfigParser()
+CFG.read("conf/config.ini", encoding="utf-8")
 
 # general
-PEAK_MODE = CONFIG.getboolean("general", "peak_mode")
-SUMMER_HEAT_PRICING = CONFIG["general"]["summer_heat_pricing"]
+PEAK_MODE = CFG.getboolean("general", "peak_mode")
+SUMMER_HEAT_PRICING = CFG["general"]["summer_heat_pricing"]
 
 
 # paths
-RAW_ODS_FILE = Path(CONFIG["paths"]["raw_ods_file"])
-WEATHER_CSV = Path(CONFIG["paths"]["weather_csv"])
-CLEANED_DATA_CSV = Path(CONFIG["paths"]["cleaned_data_csv"])
+RAW_ODS_FILE = Path(CFG["paths"]["raw_ods_file"])
+WEATHER_CSV = Path(CFG["paths"]["weather_csv"])
+CLEANED_DATA_CSV = Path(CFG["paths"]["cleaned_data_csv"])
 
 # pricing / thresholds
-ADD_ON_PRICE = CONFIG.getfloat("pricing", "add_on_price")  # ¢/kWh
-ADD_ON_PRICE_PEAK = CONFIG.getfloat("pricing", "add_on_price_peak")  # ¢/kWh
-VAT = CONFIG.getfloat("pricing", "vat")  # fraction
-PRICE_THRESHOLD = CONFIG.getfloat("electricity_thresholds", "price_threshold")
-PV_TARGET_KWH = CONFIG.getfloat("tiered_pv", "pv_feed_in_target_kwh")
-HEAT_PRICE = CONFIG.getfloat("pricing", "heat_price")  # ¢/kWh
+ADD_ON_PRICE = CFG.getfloat("pricing", "add_on_price")  # ¢/kWh
+ADD_ON_PRICE_PEAK = CFG.getfloat("pricing", "add_on_price_peak")  # ¢/kWh
+VAT = CFG.getfloat("pricing", "vat")  # fraction
+PRICE_THRESHOLD = CFG.getfloat("electricity_thresholds", "price_threshold")
+PV_TARGET_KWH = CFG.getfloat("tiered_pv", "pv_feed_in_target_kwh")
+HEAT_PRICE = CFG.getfloat("pricing", "heat_price")  # ¢/kWh
 
 # price scales
-SCALE_PRICE = CONFIG.getfloat("price_scales", "scale_price")
-SCALE_GRID = CONFIG.getfloat("price_scales", "scale_grid")
-SCALE_TAXES = CONFIG.getfloat("price_scales", "scale_taxes")
+SCALE_PRICE = CFG.getfloat("price_scales", "scale_price")
+SCALE_GRID = CFG.getfloat("price_scales", "scale_grid")
+SCALE_TAXES = CFG.getfloat("price_scales", "scale_taxes")
 
 # interpolation / resample
-LIMIT_HOURS = CONFIG.getint("interpolation", "limit_hours")
-RESAMPLE_FREQ = CONFIG.get("time", "resample_frequency")
+LIMIT_HOURS = CFG.getint("interpolation", "limit_hours")
+RESAMPLE_FREQ = CFG.get("time", "resample_frequency")
 
 # cooling‑demand settings
-QYEAR_CHILLER = CONFIG.getfloat("cooling_demand", "Qyear_chiller")
-QYEAR_FREEZER = CONFIG.getfloat("cooling_demand", "Qyear_freezer")
-T_CHILLER_SETPOINT = CONFIG.getfloat("cooling_demand", "T_chiller_setpoint")
-T_FREEZER_SETPOINT = CONFIG.getfloat("cooling_demand", "T_freezer_setpoint")
-T_GROUND = CONFIG.getfloat("cooling_demand", "T_ground")
-BASEMENT_WEIGHT = CONFIG.getfloat("cooling_demand", "basement_weight")
+QYEAR_CHILLER = CFG.getfloat("cooling_demand", "Qyear_chiller")
+QYEAR_FREEZER = CFG.getfloat("cooling_demand", "Qyear_freezer")
+T_CHILLER_SETPOINT = CFG.getfloat("cooling_demand", "T_chiller_setpoint")
+T_FREEZER_SETPOINT = CFG.getfloat("cooling_demand", "T_freezer_setpoint")
+T_GROUND = CFG.getfloat("cooling_demand", "T_ground")
+BASEMENT_WEIGHT = CFG.getfloat("cooling_demand", "basement_weight")
 
 # COP parameters
-COP_MAX = CONFIG.getfloat("cop", "COP_MAX")
+COP_MAX = CFG.getfloat("cop", "COP_MAX")
 # °C temperature difference between air and condensor side
-T_DELTA_AIR = CONFIG.getfloat("cop", "T_delta_air")
+T_DELTA_AIR = CFG.getfloat("cop", "T_delta_air")
 # °C temperature difference between brine and condensor side
-T_DELTA = CONFIG.getfloat("cop", "T_delta") 
-COP_FREEZER_EXPECTED = CONFIG.getfloat("cop", "COP_ambient_freezer_expected")
-COP_CHILLER_EXPECTED = CONFIG.getfloat("cop", "COP_ambient_chiller_expected")
+T_DELTA = CFG.getfloat("cop", "T_delta") 
+COP_FREEZER_EXPECTED = CFG.getfloat("cop", "COP_ambient_freezer_expected")
+COP_CHILLER_EXPECTED = CFG.getfloat("cop", "COP_ambient_chiller_expected")
 
 # Read the ODS file, setting the correct header row
 df = pd.read_excel(RAW_ODS_FILE, engine="odf", sheet_name=0, header=1, dtype=str)

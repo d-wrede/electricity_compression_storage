@@ -1,3 +1,13 @@
+from __future__ import annotations
+
+"""Complete CAES‑dispatch script – **config‑driven**
+====================================================
+Only literals that remain are explanatory strings. All technical
+parameters, thresholds, file paths and solver options are read from
+*conf/config.ini*.
+"""
+
+
 import numpy as np
 import pandas as pd
 import oemof.solph as solph
@@ -10,15 +20,63 @@ from pyomo.opt import SolverFactory
 from tabulate import tabulate
 from src.color_mapping import assign_colors_to_columns
 import configparser
+from pathlib import Path
 
 
-# read config file
-config = configparser.ConfigParser()
-# config.read("conf\config.ini")
-config.read("conf/config.ini", encoding="utf-8")
+# ────────────────────────────────
+# 1. Configuration
+# ────────────────────────────────
+CFG = configparser.ConfigParser()
+CFG.read("conf/config.ini", encoding="utf-8")
 
-# Set to True to enable non-simultaneity constraints
-non_simultaneity = config.getboolean("general", "non_simultaneity")
+# general flags
+NON_SIMULT = CFG.getboolean("general", "non_simultaneity")
+
+# peak‑mode / threshold & cost
+if CFG.getboolean("general", "peak_mode"):
+    PEAK_THRESHOLD = CFG.getfloat("peak", "threshold_kw_peak")  # kW
+    PEAK_COST_EUR_KW = CFG.getfloat("pricing", "cost_eur_per_kw_peak")
+else:
+    PEAK_THRESHOLD = CFG.getfloat("peak", "threshold_kw")  # kW
+    PEAK_COST_EUR_KW = CFG.getfloat("pricing", "cost_eur_per_kw")
+PEAK_COST_CENT_KW = PEAK_COST_EUR_KW * 100  # convert € → ¢
+
+# pricing
+FEED_IN_PRICE = CFG.getfloat("pricing", "feed_in_price")  # €cent/kWh
+PV_COMP_1 = CFG.getfloat("pricing", "pv_consumption_compensation1")  # €cent/kWh
+PV_COMP_2 = CFG.getfloat("pricing", "pv_consumption_compensation2")  # €cent/kWh
+CONVERTER_COSTS_CENT = CFG.getfloat(
+    "pricing", "converter_costs_cent_per_kwh", fallback=0.0
+)
+HEAT_PRICE_CENT = CFG.getfloat("pricing", "heat_price")
+
+# storage sizing
+CAES_CAPACITY_KWH = CFG.getfloat("caes_storage", "caes_capacity_kwh")
+CHARGE_POWER_KW = CFG.getfloat("caes_storage", "storage_charge_power_kw")
+DISCHARGE_POWER_KW = CFG.getfloat("caes_storage", "storage_discharge_power_kw")
+STORAGE_LOSS_RATE = CFG.getfloat("caes_storage", "storage_loss_rate")
+COLD_CAPACITY_KWH = CFG.getfloat("cold_storage", "cold_capacity_kwh")
+
+# time‑parameters
+START_TIME = CFG["time"]["start_time"]
+END_TIME = CFG["time"]["end_time"]
+FREQ = CFG["time"]["resample_frequency"]
+
+# paths
+DATA_CSV = Path(CFG["paths"]["cleaned_data_csv"])
+STORAGE_RESULTS_CSV = Path(CFG["paths"]["storage_results_csv"])
+PREPROCESSED_CSV = Path(CFG["paths"]["preprocessed_results_csv"])
+ENERGY_BALANCE_CSV = Path(CFG["paths"]["energy_balance_csv"])
+ECONOMIC_SUM_CSV = Path(CFG["paths"]["economic_summary_csv"])
+
+# solver opts
+SOLVER_NAME = CFG["solver"]["name"]
+SOLVER_TEE = CFG.getboolean("solver", "tee")
+SOLVER_GAP = CFG.getfloat("solver", "ratio_gap")
+
+# tiered PV fraction
+TIER_FRACTION = CFG.getfloat("tiered_pv", "threshold_fraction")
+
 
 # Define column names for reference and CAES results
 ref_energy_columns = ["demand", "pv", "pv_feed_in_ref", "grid_import_ref"]
@@ -91,13 +149,7 @@ def get_data():
 
 df = get_data()
 
-# Define a constant feed-in price in €/Wh
-feed_in_price = config.getfloat("pricing", "feed_in_price")  # €cent/kWh
-pv_consumption_compensation1 = config.getfloat(
-    "pricing", "pv_consumption_compensation1")  # €cent/kWh
-pv_consumption_compensation2 = config.getfloat(
-    "pricing", "pv_consumption_compensation2"
-)  # €cent/kWh
+
 heat_price = df["heat_price"]  # €cent/kWh
 q_demand_chiller = df["Q_demand_chiller"]  # kWh/hour
 q_max_chiller = df["Q_demand_chiller"].max()
@@ -105,11 +157,6 @@ q_demand_freezer = df["Q_demand_freezer"]  # kWh/hour
 q_max_freezer = df["Q_demand_freezer"].max()
 cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
 cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
-peak_threshold = 60  # kW
-peak_cost = config.getfloat("pricing", "cost_eur_per_kw_peak") * 100  # €c/kW
-converter_costs = 0  # €c/kWh
-CAES_storage_capacity = 300  # kWh
-cold_storage_capacity = 50  # kWh
 
 # Create an energy system
 energy_system = solph.EnergySystem(timeindex=df.index)
@@ -128,7 +175,7 @@ pv_link = solph.components.Converter(
     inputs={b_pv: solph.flows.Flow()},
     outputs={
         b_el: solph.flows.Flow(
-            min=0, nominal_value=1000, variable_costs=-pv_consumption_compensation2
+            min=0, nominal_value=1000, variable_costs=-PV_COMP_2
         )
     },  # Prevents flow back into b_pv
     conversion_factors={(b_pv, b_el): 1},
@@ -143,7 +190,7 @@ energy_system.add(pv)
 
 # pv feed-in sink (selling electricity at a constant price)
 excess_sink = solph.components.Sink(
-    label="excess_sink", inputs={b_pv: solph.flows.Flow(variable_costs=-feed_in_price)}
+    label="excess_sink", inputs={b_pv: solph.flows.Flow(variable_costs=-FEED_IN_PRICE)}
 )
 energy_system.add(excess_sink)
 
@@ -152,7 +199,7 @@ el_source = solph.components.Source(
     label="el_source",
     outputs={
         b_el: solph.flows.Flow(
-            nominal_value=peak_threshold, variable_costs=df["price"]
+            nominal_value=PEAK_THRESHOLD, variable_costs=df["price"]
         )
     },
 )
@@ -161,7 +208,7 @@ energy_system.add(el_source)
 # Peak electricity source with higher variable costs
 el_peak_source = solph.components.Source(
     label="el_peak_source",
-    outputs={b_el: solph.flows.Flow(variable_costs=df["price"] + peak_cost)},
+    outputs={b_el: solph.flows.Flow(variable_costs=df["price"] + PEAK_COST_CENT_KW)},
 )
 energy_system.add(el_peak_source)
 
@@ -177,7 +224,7 @@ storage = solph.components.GenericStorage(
     label="storage",
     inputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW charge power
     outputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW discharge power
-    nominal_storage_capacity=CAES_storage_capacity,  # kWh total storage capacity
+    nominal_storage_capacity=CAES_CAPACITY_KWH,  # kWh total storage capacity
     initial_storage_level=0.5,
     loss_rate=0,  # No self-discharge expected
     balanced=True,
@@ -190,7 +237,7 @@ energy_system.add(storage)
 compression_converter = solph.components.Converter(
     label="compression_converter",
     inputs={
-        b_el: solph.flows.Flow(nominal_value=100, variable_costs=converter_costs)
+        b_el: solph.flows.Flow(nominal_value=100, variable_costs=CONVERTER_COSTS_CENT)
     },  # Max input power 100 kW
     outputs={
         b_air: solph.flows.Flow(nominal_value=100),  # Storing compressed air
@@ -207,7 +254,7 @@ energy_system.add(compression_converter)
 expansion_converter = solph.components.Converter(
     label="expansion_converter",
     inputs={
-        b_air: solph.flows.Flow(nominal_value=100, variable_costs=converter_costs)
+        b_air: solph.flows.Flow(nominal_value=100, variable_costs=CONVERTER_COSTS_CENT)
     },  # Max air input 100 kW
     outputs={
         b_el: solph.flows.Flow(nominal_value=40),  # 40 kWh recovered as electricity
@@ -225,7 +272,7 @@ cold_storage = solph.components.GenericStorage(
     label="cold_storage",
     inputs={b_cold: solph.flows.Flow()},
     outputs={b_cold: solph.flows.Flow()},
-    nominal_storage_capacity=cold_storage_capacity,  # in kWh
+    nominal_storage_capacity=COLD_CAPACITY_KWH,  # in kWh
     initial_storage_level=0.5,  # for instance, starting full; adjust as needed
     loss_rate=0.0,  # adjust if there are standing losses
     inflow_conversion_factor=1,
@@ -317,7 +364,7 @@ def apply_non_simultaneity_constraints(
 
 # Apply the non-simultaneity constraints
 apply_non_simultaneity_constraints(
-    model, compression_converter, expansion_converter, b_air, enable=non_simultaneity
+    model, compression_converter, expansion_converter, b_air, enable=NON_SIMULT
 )
 
 
@@ -591,8 +638,8 @@ def tiered_pv_earnings(pv_series, pv_self_use_series):
     tier2_kwh = max(pv_self_use_total - threshold_kwh, 0)
 
     # Earnings
-    earnings_self_use = (tier1_kwh * pv_consumption_compensation1 / 100 +
-                         tier2_kwh * pv_consumption_compensation2 / 100)
+    earnings_self_use = (tier1_kwh * PV_COMP_1 / 100 +
+                         tier2_kwh * PV_COMP_2 / 100)
 
     # Distribute annual earnings proportionally across time steps
     return pv_self_use_series / pv_self_use_total * earnings_self_use
@@ -616,7 +663,7 @@ def evaluate_economic_impact(df, results):
 
     # Earnings from exporting excess PV
     df["pv_feed_in_earnings_ref"] = df["pv_feed_in_ref"] * (
-        feed_in_price / 100
+        FEED_IN_PRICE / 100
     )  # Convert to €
 
     # Grid import cost
@@ -625,7 +672,7 @@ def evaluate_economic_impact(df, results):
     )  # Convert to €
     # peak cost reference
     peak_time_ref = df["grid_import_ref"].idxmax()
-    peak_cost_ref = df["grid_import_ref"].max() * peak_cost / 100
+    peak_cost_ref = df["grid_import_ref"].max() * PEAK_COST_CENT_KW / 100
     df["peak_cost_ref"] = 0
     df.at[peak_time_ref, "peak_cost_ref"] = peak_cost_ref
 
@@ -658,13 +705,13 @@ def evaluate_economic_impact(df, results):
         df["grid_import_caes"] * df["price"] / 100
     )  # Convert to €
     peak_time_caes = df["grid_import_caes"].idxmax()
-    cost_peak_caes = df["grid_import_caes"].max() * peak_cost / 100
+    cost_peak_caes = df["grid_import_caes"].max() * PEAK_COST_CENT_KW / 100
     df["peak_cost_caes"] = 0
     df.at[peak_time_caes, "peak_cost_caes"] = cost_peak_caes
 
     df["pv_self_use_earnings_caes"] = tiered_pv_earnings(df["pv"], df["pv_self_use_caes"])
     df["pv_feed_in_earnings_caes"] = (
-        df["pv_feed_in_caes"] * feed_in_price / 100
+        df["pv_feed_in_caes"] * FEED_IN_PRICE / 100
     )  # Convert to €
 
     df["heat_earnings_caes"] = df["heat_output"] * heat_price / 100
@@ -885,7 +932,7 @@ def plot_hourly_resolution_energy_flows(start_time, end_time, df):
     max_grid_import = grid_import.max()
     print("max grid import: ", max_grid_import)
 
-    if max_grid_import > peak_threshold:
+    if max_grid_import > PEAK_THRESHOLD:
         peak_time = grid_import.idxmax()
         # print date and time of max grid import
         print("#########################")
@@ -926,7 +973,7 @@ def plot_hourly_resolution_energy_flows(start_time, end_time, df):
     compression_power = df_cut["compression_power"]
     expansion_power = df_cut["expansion_power"]
 
-    ax1.axhline(peak_threshold, color="red", linestyle="dashed")
+    ax1.axhline(PEAK_THRESHOLD, color="red", linestyle="dashed")
     ax1.plot(demand_results.index, demand_results, label="Demand", color=columns_colors["demand"])
     ax1.plot(pv_results.index, pv_results, label="PV Production", color=columns_colors["pv"])
 
@@ -1086,13 +1133,13 @@ def plot_cost_series(df):
     )
     ax.plot(
         df.index,
-        (df["compression_power"] * converter_costs / 100).cumsum(),
+        (df["compression_power"] * CONVERTER_COSTS_CENT / 100).cumsum(),
         label="Compression Costs (CAES)",
         color=colors["compression_cost"],
     )
     ax.plot(
         df.index,
-        (df["expansion_power"] * converter_costs / 100).cumsum(),
+        (df["expansion_power"] * CONVERTER_COSTS_CENT / 100).cumsum(),
         label="Expansion Costs (CAES)",
         color=colors["expansion_cost"],
     )
@@ -1181,7 +1228,7 @@ def create_economic_summary_table(df):
 
     def define_peak_costs(df, column):
         peak_time = df[column].idxmax()
-        peak_cost_value = df[column].max() * peak_cost / 100
+        peak_cost_value = df[column].max() * PEAK_COST_CENT_KW / 100
         column_name = "peak_cost_" + column.split("_")[-1]
         df[column_name] = 0
         df.at[peak_time, column_name] = peak_cost_value
@@ -1189,8 +1236,8 @@ def create_economic_summary_table(df):
     define_peak_costs(df, "grid_import_ref")
     define_peak_costs(df, "grid_import_caes")
 
-    df["compression_cost"] = df["compression_power"] * converter_costs / 100
-    df["expansion_cost"] = df["expansion_power"] * converter_costs / 100
+    df["compression_cost"] = df["compression_power"] * CONVERTER_COSTS_CENT / 100
+    df["expansion_cost"] = df["expansion_power"] * CONVERTER_COSTS_CENT / 100
 
     economics_data = {
         "Reference [€]": [
