@@ -14,7 +14,8 @@ import configparser
 
 # read config file
 config = configparser.ConfigParser()
-config.read("conf/config.ini")
+# config.read("conf\config.ini")
+config.read("conf/config.ini", encoding="utf-8")
 
 # Set to True to enable non-simultaneity constraints
 non_simultaneity = config.getboolean("general", "non_simultaneity")
@@ -93,7 +94,7 @@ df = get_data()
 # Define a constant feed-in price in €/Wh
 feed_in_price = config.getfloat("pricing", "feed_in_price")  # €cent/kWh
 pv_consumption_compensation1 = config.getfloat(
-    "pricing", "pv_consumption_compensation1"
+    "pricing", "pv_consumption_compensation1")  # €cent/kWh
 pv_consumption_compensation2 = config.getfloat(
     "pricing", "pv_consumption_compensation2"
 )  # €cent/kWh
@@ -105,7 +106,7 @@ q_max_freezer = df["Q_demand_freezer"].max()
 cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
 cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
 peak_threshold = 60  # kW
-peak_cost = 149.46 * 100  # €c/kW 149.46 zu 10.83
+peak_cost = config.getfloat("pricing", "cost_eur_per_kw_peak") * 100  # €c/kW
 converter_costs = 0  # €c/kWh
 CAES_storage_capacity = 300  # kWh
 cold_storage_capacity = 50  # kWh
@@ -1617,4 +1618,4 @@ if __name__ == "__main__":
     #     print_type="costs")
 
     plot_results(df_l)
-    plt.show()
+    # plt.show()
