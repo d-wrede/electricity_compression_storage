@@ -53,7 +53,7 @@ def calc_price(df):
     scale_price = 1
     scale_grid = 1
     scale_taxes = 1
-    add_on_price = 13.08 * scale_grid  # €cent/kWh  7.53 zu 13.08
+    add_on_price = 7.53 * scale_grid  # €cent/kWh  7.53 zu 13.08
     MwSt = 0.19 * scale_taxes
     df["price"] = df["price"] * scale_price + add_on_price
     df["price"] = df["price"] * (1 + MwSt)
@@ -301,8 +301,6 @@ def add_cold_price(df):
     # Set to zero for negative values
     df["cold_price_freezer"] = df["cold_price_freezer"].clip(lower=0)
     df["cold_price_chiller"] = df["cold_price_chiller"].clip(lower=0)
-    print("mean cold price chiller: ", df["cold_price_chiller"].mean())
-    print("mean cold price freezer: ", df["cold_price_freezer"].mean())
 
     # drop columns
     # df = df.drop(columns=["COP_ambient_freezer", "COP_ambient_chiller", "cold_temp", "COP_caes_freezer", "COP_caes_chiller"])
@@ -389,7 +387,7 @@ plot_temperature_and_demand(df)
 heat_price = 9.5 # €cent/kWh
 df["heat_price"] = heat_price
 # set to zero during summer months
-df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), heat_price * 0.5)
+# df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), heat_price * 0.5)
 
 # plot prices
 fig, ax = plt.subplots(figsize=(15, 5))

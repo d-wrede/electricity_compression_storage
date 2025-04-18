@@ -9,10 +9,15 @@ from pyomo.environ import Var, ConstraintList, Binary
 from pyomo.opt import SolverFactory
 from tabulate import tabulate
 from src.color_mapping import assign_colors_to_columns
+import configparser
 
+
+# read config file
+config = configparser.ConfigParser()
+config.read("conf/config.ini")
 
 # Set to True to enable non-simultaneity constraints
-non_simultaneity = True
+non_simultaneity = config.getboolean("general", "non_simultaneity")
 
 # Define column names for reference and CAES results
 ref_energy_columns = ["demand", "pv", "pv_feed_in_ref", "grid_import_ref"]
@@ -86,9 +91,12 @@ def get_data():
 df = get_data()
 
 # Define a constant feed-in price in €/Wh
-feed_in_price = 28.74  # €cent/kWh
-pv_consumption_compensation1 = 12  # €cent/kWh
-pv_consumption_compensation2 = 16.38  # €cent/kWh
+feed_in_price = config.getfloat("pricing", "feed_in_price")  # €cent/kWh
+pv_consumption_compensation1 = config.getfloat(
+    "pricing", "pv_consumption_compensation1"
+pv_consumption_compensation2 = config.getfloat(
+    "pricing", "pv_consumption_compensation2"
+)  # €cent/kWh
 heat_price = df["heat_price"]  # €cent/kWh
 q_demand_chiller = df["Q_demand_chiller"]  # kWh/hour
 q_max_chiller = df["Q_demand_chiller"].max()
@@ -96,12 +104,11 @@ q_demand_freezer = df["Q_demand_freezer"]  # kWh/hour
 q_max_freezer = df["Q_demand_freezer"].max()
 cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
 cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
-print("cold_price_chiller avg: ", cold_price_chiller.mean())
-print("cold_price_freezer avg: ", cold_price_freezer.mean())
-peak_threshold = 150  # kW
-peak_cost = 10.83 * 100  # €c/kW 149.46 zu 10.83
+peak_threshold = 60  # kW
+peak_cost = 149.46 * 100  # €c/kW 149.46 zu 10.83
 converter_costs = 0  # €c/kWh
-cold_storage_capacity = 5000  # kWh
+CAES_storage_capacity = 300  # kWh
+cold_storage_capacity = 50  # kWh
 
 # Create an energy system
 energy_system = solph.EnergySystem(timeindex=df.index)
@@ -169,7 +176,7 @@ storage = solph.components.GenericStorage(
     label="storage",
     inputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW charge power
     outputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW discharge power
-    nominal_storage_capacity=400,  # 400 kWh total storage capacity
+    nominal_storage_capacity=CAES_storage_capacity,  # kWh total storage capacity
     initial_storage_level=0.5,
     loss_rate=0,  # No self-discharge expected
     balanced=True,
