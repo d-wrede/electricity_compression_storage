@@ -1665,4 +1665,4 @@ if __name__ == "__main__":
     #     print_type="costs")
 
     plot_results(df_l)
-    # plt.show()
+    plt.show()

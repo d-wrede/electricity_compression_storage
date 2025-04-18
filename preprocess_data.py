@@ -14,7 +14,9 @@ CFG.read("conf/config.ini", encoding="utf-8")
 # general
 PEAK_MODE = CFG.getboolean("general", "peak_mode")
 SUMMER_HEAT_PRICING = CFG["general"]["summer_heat_pricing"]
-
+print("summer_heat_pricing: ", SUMMER_HEAT_PRICING)
+if SUMMER_HEAT_PRICING not in ["high", "low"]:
+    raise ValueError("summer_heat_pricing must be 'high' or 'low'")
 
 # paths
 RAW_ODS_FILE = Path(CFG["paths"]["raw_ods_file"])
@@ -51,7 +53,7 @@ COP_MAX = CFG.getfloat("cop", "COP_MAX")
 # °C temperature difference between air and condensor side
 T_DELTA_AIR = CFG.getfloat("cop", "T_delta_air")
 # °C temperature difference between brine and condensor side
-T_DELTA = CFG.getfloat("cop", "T_delta") 
+T_DELTA_HEXCHANGER = CFG.getfloat("cop", "T_delta_hexchanger") 
 COP_FREEZER_EXPECTED = CFG.getfloat("cop", "COP_ambient_freezer_expected")
 COP_CHILLER_EXPECTED = CFG.getfloat("cop", "COP_ambient_chiller_expected")
 
@@ -358,14 +360,14 @@ def add_cold_price(df):
     df["cold_temp"] = 3  # °C brine temperature (on condenser side)
     df["COP_caes_freezer"] = df["cold_temp"].apply(
         lambda T: calculate_real_cop(
-            T_cold_C=-27, T_hot_C=T + T_DELTA, eta=efficiency_factor_freezer
+            T_cold_C=-27, T_hot_C=T + T_DELTA_HEXCHANGER, eta=efficiency_factor_freezer
         )
     )
     df["COP_caes_chiller"] = (
         df["cold_temp"]
         .apply(
             lambda T: calculate_real_cop(
-                T_cold_C=0, T_hot_C=T + T_DELTA, eta=efficiency_factor_chiller
+                T_cold_C=0, T_hot_C=T + T_DELTA_HEXCHANGER, eta=efficiency_factor_chiller
             )
         )
         .clip(upper=COP_MAX * efficiency_factor_chiller)
@@ -471,7 +473,7 @@ plot_temperature_and_demand(df)
 df["heat_price"] = HEAT_PRICE
 # set to zero during summer months
 if SUMMER_HEAT_PRICING == "low":
-    df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), heat_price * 0.5)
+    df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), HEAT_PRICE * 0.5)
 
 # plot prices
 fig, ax = plt.subplots(figsize=(15, 5))
@@ -493,12 +495,7 @@ ax.grid()
 # Save cleaned data for use in oemof
 df.to_csv("data.csv")
 
-# print index
-# print(df.index)
-
 # print max pv production
 print("max pv production: ", df["pv"].max())
 
-# Display first rows
-print(df.head())
 # plt.show()
