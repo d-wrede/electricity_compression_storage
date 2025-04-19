@@ -421,18 +421,42 @@ def preprocess_ref(df):
 
 def preprocess_caes(df, results):
     # Transfer all relevant caes result flows into df columns.
-    df["grid_import_caes"] = (
+    # --- original result series -----------------------------------------------
+    grid_import_orig = (
         results[(el_source, b_el)]["sequences"]["flow"]
         + results[(el_peak_source, b_el)]["sequences"]["flow"]
     ).loc[df.index]
-    df["pv_feed_in_caes"] = results[(b_pv, excess_sink)]["sequences"]["flow"].loc[
-        df.index
-    ]
-    # There should only be pv_feed_in, if grid import is zero.
-    # correction = pv_feed_in.where(grid_import > 0, 0).clip(upper=grid_import)
+    pv_feed_orig = results[(b_pv, excess_sink)]["sequences"]["flow"].loc[df.index]
 
+    overlap = np.minimum(grid_import_orig, pv_feed_orig)
+    print("total overlap: ", overlap.sum())
 
+    # --- unidirectional correction --------------------------------------------
+    diff            = grid_import_orig - pv_feed_orig
+    grid_corrected  = diff.clip(lower=0)
+    df["grid_import_caes"] = grid_corrected
+    pv_corrected    = (-diff).clip(lower=0)
+    df["pv_feed_in_caes"] = pv_corrected
 
+    # --- overlap (= “correction”) ---------------------------------------------
+    # overlap = grid_import_orig - grid_corrected          # identical to pv_feed_orig - pv_corrected
+    # or, equivalently:
+    #
+
+    # plot the difference with related timeseries
+    plt.plot(df.index, grid_import_orig, label="grid_import_caes")
+    plt.plot(df.index, pv_feed_orig, label="pv_feed_in_caes")
+    # plt.plot(df.index, df["grid_import_caes2"], label="grid_import_caes2")
+    # plt.plot(df.index, df["pv_feed_in_caes2"], label="pv_feed_in_caes2")
+    plt.plot(df.index, diff, label="difference", alpha=0.5)
+    plt.plot(df.index, overlap, label="overlap")
+    plt.axhline(0, color="black", lw=0.5, ls="--")
+    plt.title("Difference between grid import and pv feed-in")
+    plt.xlabel("Time")
+    plt.ylabel("kW")
+    plt.legend()
+    plt.grid()
+    plt.show()
 
     df["pv_self_use_caes"] = df["pv"] - df["pv_feed_in_caes"]
     df["compression_power"] = results[(b_el, compression_converter)]["sequences"][
