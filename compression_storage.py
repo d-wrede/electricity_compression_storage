@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-"""Complete CAES‑dispatch script – **config‑driven**
+"""
+Complete CAES‑dispatch script – **config‑driven**
 ====================================================
 Only literals that remain are explanatory strings. All technical
 parameters, thresholds, file paths and solver options are read from
@@ -31,6 +32,7 @@ CFG.read("conf/config.ini", encoding="utf-8")
 
 # general flags
 NON_SIMULT = CFG.getboolean("general", "non_simultaneity")
+LESS_HEAT_AND_COLD_PRICE = CFG.getboolean("general", "less_heat_and_cold_price")
 
 # peak‑mode / threshold & cost
 if CFG.getboolean("general", "peak_mode"):
@@ -48,7 +50,6 @@ PV_COMP_2 = CFG.getfloat("pricing", "pv_consumption_compensation2")  # €cent/k
 CONVERTER_COSTS_CENT = CFG.getfloat(
     "pricing", "converter_costs_cent_per_kwh", fallback=0.0
 )
-HEAT_PRICE_CENT = CFG.getfloat("pricing", "heat_price")
 
 # storage sizing
 CAES_CAPACITY_KWH = CFG.getfloat("caes_storage", "caes_capacity_kwh")
@@ -150,13 +151,18 @@ def get_data():
 df = get_data()
 
 
-heat_price = df["heat_price"]  # €cent/kWh
+heat_price = df["heat_price"]
 q_demand_chiller = df["Q_demand_chiller"]  # kWh/hour
 q_max_chiller = df["Q_demand_chiller"].max()
 q_demand_freezer = df["Q_demand_freezer"]  # kWh/hour
 q_max_freezer = df["Q_demand_freezer"].max()
 cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
 cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
+
+if LESS_HEAT_AND_COLD_PRICE:
+    factor_heat = 0.85
+else:
+    factor_heat = 1
 
 # Create an energy system
 energy_system = solph.EnergySystem(timeindex=df.index)
@@ -283,7 +289,8 @@ energy_system.add(cold_storage)
 
 # sink for heat
 heat_sink = solph.components.Sink(
-    label="heat_sink", inputs={b_heat: solph.flows.Flow(variable_costs=-heat_price)}
+    label="heat_sink",
+    inputs={b_heat: solph.flows.Flow(variable_costs=-heat_price * factor_heat)},
 )
 energy_system.add(heat_sink)
 
@@ -293,9 +300,9 @@ cold_sink_freezer = solph.components.Sink(
     label="cold_sink_freezer",
     inputs={
         b_cold: solph.flows.Flow(
-            variable_costs=-cold_price_freezer,
+            variable_costs=-cold_price_freezer * factor_heat,
             nominal_value=q_max_freezer,
-            max=q_demand_freezer/q_max_freezer,
+            max=q_demand_freezer / q_max_freezer,
         )
     },
 )
@@ -306,9 +313,9 @@ cold_sink_chiller = solph.components.Sink(
     label="cold_sink_chiller",
     inputs={
         b_cold: solph.flows.Flow(
-            variable_costs=-cold_price_chiller,
+            variable_costs=-cold_price_chiller * factor_heat,
             nominal_value=q_max_chiller,
-            max = q_demand_chiller/q_max_chiller,
+            max=q_demand_chiller / q_max_chiller,
         )
     },
 )
@@ -421,6 +428,12 @@ def preprocess_caes(df, results):
     df["pv_feed_in_caes"] = results[(b_pv, excess_sink)]["sequences"]["flow"].loc[
         df.index
     ]
+    # There should only be pv_feed_in, if grid import is zero.
+    # correction = pv_feed_in.where(grid_import > 0, 0).clip(upper=grid_import)
+
+
+
+
     df["pv_self_use_caes"] = df["pv"] - df["pv_feed_in_caes"]
     df["compression_power"] = results[(b_el, compression_converter)]["sequences"][
         "flow"
@@ -1665,4 +1678,4 @@ if __name__ == "__main__":
     #     print_type="costs")
 
     plot_results(df_l)
-    plt.show()
+    # plt.show()
