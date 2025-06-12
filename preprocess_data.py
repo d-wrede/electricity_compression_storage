@@ -5,6 +5,7 @@ import pytz
 import configparser
 from pathlib import Path
 
+plot_switch = True
 
 # ────────────────────────────────
 # 1. Configuration
@@ -243,8 +244,8 @@ def negative_demand_days(df):
 
     # plt.show()
 
-
-negative_demand_days(df)
+if plot_switch:
+    negative_demand_days(df)
 
 # Drop redundant columns
 df = df[["demand", "price", "pv"]]
@@ -387,7 +388,8 @@ def add_cold_price(df):
 
     # drop columns
     # df = df.drop(columns=["COP_ambient_freezer", "COP_ambient_chiller", "cold_temp", "COP_caes_freezer", "COP_caes_chiller"])
-    plot_cop_values(df)
+    if plot_switch:
+        plot_cop_values(df)
     return df
 
 
@@ -467,7 +469,8 @@ def plot_temperature_and_demand(df):
 
 # Example usage:
 # Assuming 'df' is your DataFrame with a DateTimeIndex and already contains the calculated fields.
-plot_temperature_and_demand(df)
+if plot_switch:
+    plot_temperature_and_demand(df)
 
 
 # add heat price
@@ -476,22 +479,24 @@ df["heat_price"] = HEAT_PRICE
 if SUMMER_HEAT_PRICING == "low":
     df["heat_price"] = df["heat_price"].mask((df.index.month >= 5) & (df.index.month <= 9), HEAT_PRICE * 0.5)
 
-# plot prices
-fig, ax = plt.subplots(figsize=(15, 5))
-# ax.plot(df["price"], label="Electricity Price", color="blue")
-ax.plot(df["cold_price_freezer"], label="Cold Price freezer", color="blue")
-ax.plot(df["cold_price_chiller"], label="Cold Price chiller", color="cyan")
-ax.plot(df["heat_price"], label="Heat Price", color="red")
-# ax.plot(df["ambient_temp"], label="Ambient Temperature", color="orange")
-# # plot cops
-# ax.plot(df["COP_ambient"], label="COP Ambient", color="purple")
-# ax.plot(df["COP_caes"], label="COP CAES", color="black")
-ax.set_title("Electricity, Cold and Heat Prices")
-ax.set_xlabel("Time")
-ax.set_ylabel("Price [€c/kWh]")
-ax.legend()
-ax.grid()
-# plt.show()
+def plot_prices(df):
+    fig, ax = plt.subplots(figsize=(15, 5))
+    # ax.plot(df["price"], label="Electricity Price", color="blue")
+    ax.plot(df["cold_price_freezer"], label="Cold Price freezer", color="blue")
+    ax.plot(df["cold_price_chiller"], label="Cold Price chiller", color="cyan")
+    ax.plot(df["heat_price"], label="Heat Price", color="red")
+    # ax.plot(df["ambient_temp"], label="Ambient Temperature", color="orange")
+    # # plot cops
+    # ax.plot(df["COP_ambient"], label="COP Ambient", color="purple")
+    # ax.plot(df["COP_caes"], label="COP CAES", color="black")
+    ax.set_title("Electricity, Cold and Heat Prices")
+    ax.set_xlabel("Time")
+    ax.set_ylabel("Price [€c/kWh]")
+    ax.legend()
+    ax.grid()
+    # plt.show()
+if plot_switch:
+    plot_prices(df)
 
 # Save cleaned data for use in oemof
 df.to_csv("data.csv")

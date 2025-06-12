@@ -8,7 +8,7 @@ parameters, thresholds, file paths and solver options are read from
 *conf/config.ini*.
 """
 
-
+from math import sqrt
 import numpy as np
 import pandas as pd
 import oemof.solph as solph
@@ -22,6 +22,7 @@ from tabulate import tabulate
 from src.color_mapping import assign_colors_to_columns
 import configparser
 from pathlib import Path
+# import preprocess_data
 
 
 # ────────────────────────────────
@@ -51,11 +52,20 @@ CONVERTER_COSTS_CENT = CFG.getfloat(
     "pricing", "converter_costs_cent_per_kwh", fallback=0.0
 )
 
-# storage sizing
+# CAES storage parameters
+CAES_USAGE = CFG.getboolean("caes_storage", "caes_usage")
 CAES_CAPACITY_KWH = CFG.getfloat("caes_storage", "caes_capacity_kwh")
 CHARGE_POWER_KW = CFG.getfloat("caes_storage", "storage_charge_power_kw")
 DISCHARGE_POWER_KW = CFG.getfloat("caes_storage", "storage_discharge_power_kw")
 STORAGE_LOSS_RATE = CFG.getfloat("caes_storage", "storage_loss_rate")
+
+# NACL storage parameters
+NACL_USAGE = CFG.getboolean("nacl_storage", "nacl_usage")
+NACL_CAPACITY_KWH = CFG.getfloat("nacl_storage", "nacl_capacity_kwh")
+NACL_POWER_KW = CFG.getfloat("nacl_storage", "nacl_storage_charge_power_kw")
+ETA_NACL =  CFG.getfloat("nacl_storage", "eta_nacl")
+
+# cold storage parameters
 COLD_CAPACITY_KWH = CFG.getfloat("cold_storage", "cold_capacity_kwh")
 
 # time‑parameters
@@ -160,7 +170,7 @@ cold_price_chiller = df["cold_price_chiller"]  # €cent/kWh
 cold_price_freezer = df["cold_price_freezer"]  # €cent/kWh
 
 if LESS_HEAT_AND_COLD_PRICE:
-    factor_heat = 0.85
+    factor_heat = 0.55
 else:
     factor_heat = 1
 
@@ -225,106 +235,121 @@ demand = solph.components.Sink(
 )
 energy_system.add(demand)
 
-# storage system
-storage = solph.components.GenericStorage(
-    label="storage",
-    inputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW charge power
-    outputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW discharge power
-    nominal_storage_capacity=CAES_CAPACITY_KWH,  # kWh total storage capacity
-    initial_storage_level=0.5,
-    loss_rate=0,  # No self-discharge expected
-    balanced=True,
-    inflow_conversion_factor=1,
-    outflow_conversion_factor=1,
-)
-energy_system.add(storage)
+if CAES_USAGE:
+    # storage system
+    storage = solph.components.GenericStorage(
+        label="storage",
+        inputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW charge power
+        outputs={b_air: solph.flows.Flow(nominal_value=100)},  # 100 kW discharge power
+        nominal_storage_capacity=CAES_CAPACITY_KWH,  # kWh total storage capacity
+        initial_storage_level=0.5,
+        loss_rate=0,  # No self-discharge expected
+        balanced=True,
+        inflow_conversion_factor=1,
+        outflow_conversion_factor=1,
+    )
+    energy_system.add(storage)
 
-# Compression Process: Electricity → Compressed Air + Heat
-compression_converter = solph.components.Converter(
-    label="compression_converter",
-    inputs={
-        b_el: solph.flows.Flow(nominal_value=100, variable_costs=CONVERTER_COSTS_CENT)
-    },  # Max input power 100 kW
-    outputs={
-        b_air: solph.flows.Flow(nominal_value=100),  # Storing compressed air
-        b_heat: solph.flows.Flow(nominal_value=90),  # Extracting heat
-    },
-    conversion_factors={
-        b_air: 1,  # 100 kWh of electricity goes into 100 kWh compressed air
-        b_heat: 0.9,  # 90 kWh heat extracted during compression
-    },
-)
-energy_system.add(compression_converter)
+    # Compression Process: Electricity → Compressed Air + Heat
+    compression_converter = solph.components.Converter(
+        label="compression_converter",
+        inputs={
+            b_el: solph.flows.Flow(nominal_value=100, variable_costs=CONVERTER_COSTS_CENT)
+        },  # Max input power 100 kW
+        outputs={
+            b_air: solph.flows.Flow(nominal_value=100),  # Storing compressed air
+            b_heat: solph.flows.Flow(nominal_value=90),  # Extracting heat
+        },
+        conversion_factors={
+            b_air: 1,  # 100 kWh of electricity goes into 100 kWh compressed air
+            b_heat: 0.9,  # 90 kWh heat extracted during compression
+        },
+    )
+    energy_system.add(compression_converter)
 
-# Expansion Process: Compressed Air → Electricity + Cold
-expansion_converter = solph.components.Converter(
-    label="expansion_converter",
-    inputs={
-        b_air: solph.flows.Flow(nominal_value=100, variable_costs=CONVERTER_COSTS_CENT)
-    },  # Max air input 100 kW
-    outputs={
-        b_el: solph.flows.Flow(nominal_value=40),  # 40 kWh recovered as electricity
-        b_cold: solph.flows.Flow(nominal_value=40),  # 40 kWh cold output
-    },
-    conversion_factors={
-        b_el: 0.4,  # 40% of stored air energy converted to electricity
-        b_cold: 0.4,  # 40% of stored air energy converted to cold
-    },
-)
-energy_system.add(expansion_converter)
+    # Expansion Process: Compressed Air → Electricity + Cold
+    expansion_converter = solph.components.Converter(
+        label="expansion_converter",
+        inputs={
+            b_air: solph.flows.Flow(nominal_value=100, variable_costs=CONVERTER_COSTS_CENT)
+        },  # Max air input 100 kW
+        outputs={
+            b_el: solph.flows.Flow(nominal_value=40),  # 40 kWh recovered as electricity
+            b_cold: solph.flows.Flow(nominal_value=40),  # 40 kWh cold output
+        },
+        conversion_factors={
+            b_el: 0.4,  # 40% of stored air energy converted to electricity
+            b_cold: 0.4,  # 40% of stored air energy converted to cold
+        },
+    )
+    energy_system.add(expansion_converter)
 
-# Create the cold storage with a capacity of 83 kWh
-cold_storage = solph.components.GenericStorage(
-    label="cold_storage",
-    inputs={b_cold: solph.flows.Flow()},
-    outputs={b_cold: solph.flows.Flow()},
-    nominal_storage_capacity=COLD_CAPACITY_KWH,  # in kWh
-    initial_storage_level=0.5,  # for instance, starting full; adjust as needed
-    loss_rate=0.0,  # adjust if there are standing losses
-    inflow_conversion_factor=1,
-    outflow_conversion_factor=1,
-    balanced=True,
-)
-energy_system.add(cold_storage)
+    # Create the cold storage with a capacity of 83 kWh
+    cold_storage = solph.components.GenericStorage(
+        label="cold_storage",
+        inputs={b_cold: solph.flows.Flow()},
+        outputs={b_cold: solph.flows.Flow()},
+        nominal_storage_capacity=COLD_CAPACITY_KWH,  # in kWh
+        initial_storage_level=0.5,  # for instance, starting full; adjust as needed
+        loss_rate=0.0,  # adjust if there are standing losses
+        inflow_conversion_factor=1,
+        outflow_conversion_factor=1,
+        balanced=True,
+    )
+    energy_system.add(cold_storage)
 
-# sink for heat
-heat_sink = solph.components.Sink(
-    label="heat_sink",
-    inputs={b_heat: solph.flows.Flow(variable_costs=-heat_price * factor_heat)},
-)
-energy_system.add(heat_sink)
+    # sink for heat
+    heat_sink = solph.components.Sink(
+        label="heat_sink",
+        inputs={b_heat: solph.flows.Flow(variable_costs=-heat_price * factor_heat)},
+    )
+    energy_system.add(heat_sink)
 
-# Create two cold sinks
-# For freezer cooling
-cold_sink_freezer = solph.components.Sink(
-    label="cold_sink_freezer",
-    inputs={
-        b_cold: solph.flows.Flow(
-            variable_costs=-cold_price_freezer * factor_heat,
-            nominal_value=q_max_freezer,
-            max=q_demand_freezer / q_max_freezer,
-        )
-    },
-)
-energy_system.add(cold_sink_freezer)
+    # Create two cold sinks
+    # For freezer cooling
+    cold_sink_freezer = solph.components.Sink(
+        label="cold_sink_freezer",
+        inputs={
+            b_cold: solph.flows.Flow(
+                variable_costs=-cold_price_freezer * factor_heat,
+                nominal_value=q_max_freezer,
+                max=q_demand_freezer / q_max_freezer,
+            )
+        },
+    )
+    energy_system.add(cold_sink_freezer)
 
-# For chiller cooling
-cold_sink_chiller = solph.components.Sink(
-    label="cold_sink_chiller",
-    inputs={
-        b_cold: solph.flows.Flow(
-            variable_costs=-cold_price_chiller * factor_heat,
-            nominal_value=q_max_chiller,
-            max=q_demand_chiller / q_max_chiller,
-        )
-    },
-)
-energy_system.add(cold_sink_chiller)
+    # For chiller cooling
+    cold_sink_chiller = solph.components.Sink(
+        label="cold_sink_chiller",
+        inputs={
+            b_cold: solph.flows.Flow(
+                variable_costs=-cold_price_chiller * factor_heat,
+                nominal_value=q_max_chiller,
+                max=q_demand_chiller / q_max_chiller,
+            )
+        },
+    )
+    energy_system.add(cold_sink_chiller)
 
-cold_sink = solph.components.Sink(
-    label="cold_sink", inputs={b_cold: solph.flows.Flow()}
-)
-energy_system.add(cold_sink)
+    cold_sink = solph.components.Sink(
+        label="cold_sink", inputs={b_cold: solph.flows.Flow()}
+    )
+    energy_system.add(cold_sink)
+elif NACL_USAGE:
+    storage = solph.components.GenericStorage(
+        label="battery",
+        inputs={b_el: solph.flows.Flow(nominal_value=NACL_POWER_KW)},  # kW charge
+        outputs={b_el: solph.flows.Flow(nominal_value=NACL_POWER_KW)},  # kW discharge
+        nominal_storage_capacity=NACL_CAPACITY_KWH,
+        initial_storage_level=0.5,
+        loss_rate=0,  # set your calendar losses if any
+        balanced=True,
+        inflow_conversion_factor=sqrt(ETA_NACL),
+        outflow_conversion_factor=sqrt(ETA_NACL),
+    )
+    energy_system.add(storage)
+
 
 # Create and solve the optimization model
 model = solph.Model(energy_system)
@@ -369,14 +394,14 @@ def apply_non_simultaneity_constraints(
         )
 
 
-# Apply the non-simultaneity constraints
-apply_non_simultaneity_constraints(
-    model, compression_converter, expansion_converter, b_air, enable=NON_SIMULT
-)
-
+if CAES_USAGE:
+    # Apply the non-simultaneity constraints
+    apply_non_simultaneity_constraints(
+        model, compression_converter, expansion_converter, b_air, enable=NON_SIMULT
+    )
 
 # Solve the optimization model
-model.solve(solver="cbc", solve_kwargs={"tee": True, "options": {"ratioGap": 0.01}})
+model.solve(solver="cbc", solve_kwargs={"tee": True, "options": {"ratioGap": 0.001}})
 
 # Extract results
 results = solph.processing.results(model)
@@ -444,37 +469,51 @@ def preprocess_caes(df, results):
     #
 
     # plot the difference with related timeseries
-    plt.plot(df.index, grid_import_orig, label="grid_import_caes")
-    plt.plot(df.index, pv_feed_orig, label="pv_feed_in_caes")
-    # plt.plot(df.index, df["grid_import_caes2"], label="grid_import_caes2")
-    # plt.plot(df.index, df["pv_feed_in_caes2"], label="pv_feed_in_caes2")
-    plt.plot(df.index, diff, label="difference", alpha=0.5)
-    plt.plot(df.index, overlap, label="overlap")
-    plt.axhline(0, color="black", lw=0.5, ls="--")
-    plt.title("Difference between grid import and pv feed-in")
-    plt.xlabel("Time")
-    plt.ylabel("kW")
-    plt.legend()
-    plt.grid()
-    plt.show()
+    # plt.plot(df.index, grid_import_orig, label="grid_import_caes")
+    # plt.plot(df.index, pv_feed_orig, label="pv_feed_in_caes")
+    # # plt.plot(df.index, df["grid_import_caes2"], label="grid_import_caes2")
+    # # plt.plot(df.index, df["pv_feed_in_caes2"], label="pv_feed_in_caes2")
+    # plt.plot(df.index, diff, label="difference", alpha=0.5)
+    # plt.plot(df.index, overlap, label="overlap")
+    # plt.axhline(0, color="black", lw=0.5, ls="--")
+    # plt.title("Difference between grid import and pv feed-in")
+    # plt.xlabel("Time")
+    # plt.ylabel("kW")
+    # plt.legend()
+    # plt.grid()
+    # plt.show()
 
     df["pv_self_use_caes"] = df["pv"] - df["pv_feed_in_caes"]
-    df["compression_power"] = results[(b_el, compression_converter)]["sequences"][
-        "flow"
-    ].loc[df.index]
-    df["expansion_power"] = results[(expansion_converter, b_el)]["sequences"][
-        "flow"
-    ].loc[df.index]
-    df["heat_output"] = results[(compression_converter, b_heat)]["sequences"][
-        "flow"
-    ].loc[df.index]
-    # df["cold_output"] = results[(b_cold, cold_sink_chiller)]["sequences"]["flow"].loc[df.index] \
-    #     + results[(b_cold, cold_sink_freezer)]["sequences"]["flow"].loc[df.index]
-    df["cold_chiller"] = results[(b_cold, cold_sink_chiller)]["sequences"]["flow"].loc[df.index]
-    df["cold_freezer"] = results[(b_cold, cold_sink_freezer)]["sequences"]["flow"].loc[df.index]
-    df["cold_waste"] = results[(b_cold, cold_sink)]["sequences"]["flow"].loc[df.index]
-    df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
-    df["soc_cold"] = results[(cold_storage, None)]["sequences"]["storage_content"].loc[df.index]
+    if CAES_USAGE:
+        df["compression_power"] = results[(b_el, compression_converter)]["sequences"][
+            "flow"
+        ].loc[df.index]
+        df["expansion_power"] = results[(expansion_converter, b_el)]["sequences"][
+            "flow"
+        ].loc[df.index]
+        df["heat_output"] = results[(compression_converter, b_heat)]["sequences"][
+            "flow"
+        ].loc[df.index]
+        # df["cold_output"] = results[(b_cold, cold_sink_chiller)]["sequences"]["flow"].loc[df.index] \
+        #     + results[(b_cold, cold_sink_freezer)]["sequences"]["flow"].loc[df.index]
+        df["cold_chiller"] = results[(b_cold, cold_sink_chiller)]["sequences"]["flow"].loc[df.index]
+        df["cold_freezer"] = results[(b_cold, cold_sink_freezer)]["sequences"]["flow"].loc[df.index]
+        df["cold_waste"] = results[(b_cold, cold_sink)]["sequences"]["flow"].loc[df.index]
+        df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[df.index]
+        df["soc_cold"] = results[(cold_storage, None)]["sequences"]["storage_content"].loc[df.index]
+    elif NACL_USAGE:
+        df["compression_power"] = results[(b_el, storage)]["sequences"]["flow"].loc[df.index].clip(lower=0)
+        df["expansion_power"] = (
+            results[(storage, b_el)]["sequences"]["flow"].loc[df.index].clip(lower=0)
+        )
+        df["heat_output"] = 0.0
+        df["cold_chiller"] = 0.0
+        df["cold_freezer"] = 0.0
+        df["cold_waste"] = 0.0
+        df["soc"] = results[(storage, None)]["sequences"]["storage_content"].loc[
+            df.index
+        ]
+        df["soc_cold"] = 0.0
     return df
 
 
@@ -1018,14 +1057,16 @@ def plot_hourly_resolution_energy_flows(start_time, end_time, df):
     ax1.plot(grid_import_cut.index, grid_import_cut, label="Grid Import", color=columns_colors["grid_import_caes"])
 
     ax1.plot(grid_export.index, -grid_export, label="Grid Export", color=columns_colors["pv_feed_in_caes"])
+    label_charge = "Compression Power" if CAES_USAGE else "Charge Power"
+    label_discharge = "Expansion Power" if CAES_USAGE else "Discharge Power"
     ax1.plot(
         compression_power.index,
         -compression_power,
-        label="Compression Power",
+        label=label_charge,
         color=columns_colors["compression_power"],
     )
     ax1.plot(
-        expansion_power.index, expansion_power, label="Expansion Power", color=columns_colors["expansion_power"]
+        expansion_power.index, expansion_power, label=label_discharge, color=columns_colors["expansion_power"]
     )
 
     # pv_link_flow = results[(pv_link, b_el)]["sequences"]["flow"]
@@ -1702,4 +1743,4 @@ if __name__ == "__main__":
     #     print_type="costs")
 
     plot_results(df_l)
-    # plt.show()
+    plt.show()
