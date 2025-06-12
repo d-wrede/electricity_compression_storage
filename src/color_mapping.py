@@ -19,28 +19,30 @@ def assign_color(col, equal_dict, mapping):
 # Define color mappings
 colors = {
     "grid_import": "darkgray",
-    "cost_grid_import": "gray",
+    "cost_grid_import": "darkgray",
     "peak_cost": "dimgray",
     "pv_feed_in": "goldenrod",
     "pv_feed_in_earnings": "goldenrod",
     "pv_self_use": "orange",
     "pv_self_use_earnings": "orange",
     "heat_earnings": "red",
-    "cold_earnings": "blue",
+    "cold_earnings_chiller": "blue",
+    "cold_earnings_freezer": "cyan",
     "compression_cost": "purple",
     "expansion_cost": "green",
     "total_cost": "black",
 }
 
 colors_equal = {
-    "demand": "blue",
+    "demand": "dimgray",
     "pv": "orange",
     "price": "black",
     # only for caes:
     "compression_power": "purple",
     "expansion_power": "green",
     "heat_output": "red",
-    "cold_output": "blue",
+    "cold_chiller": "blue",
+    "cold_freezer": "cyan",
 }
 
 # Example for energy flows:
@@ -53,7 +55,8 @@ caes_columns_energy = [
     "compression_power",
     "expansion_power",
     "heat_output",
-    "cold_output",
+    "cold_chiller",
+    "cold_freezer",
 ]
 
 # Assign colors for energy flows
