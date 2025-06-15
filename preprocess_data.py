@@ -104,23 +104,14 @@ df["pv"] = pd.to_numeric(df["pv"], errors="coerce") / 1000  # Now in kW
 
 
 def calc_price(df):
-<<<<<<< HEAD
-    scale_price = 1
-    scale_grid = 1
-    scale_taxes = 1
-    add_on_price = 13.08 * scale_grid # €cent/kWh
-    MwSt = 0.19 * scale_taxes
-    df["price"] = df["price"] * scale_price + add_on_price
-    df["price"] = df["price"] * (1 + MwSt)
-=======
     if PEAK_MODE:
         add_on_price = ADD_ON_PRICE_PEAK * SCALE_GRID  # €cent/kWh  7.53 zu 13.08
     else:
         add_on_price = ADD_ON_PRICE * SCALE_GRID
     VAT_adjusted = VAT * SCALE_TAXES
-    df["price"] = df["price"] * SCALE_PRICE + add_on_price
-    df["price"] = df["price"] * (1 + VAT_adjusted)
->>>>>>> NaCl
+    df["price"] = (df["price"] * SCALE_PRICE + add_on_price) * (1 + VAT_adjusted)
+    df["price_nopeak"] = (df["price"] * SCALE_PRICE + ADD_ON_PRICE * SCALE_GRID) * (
+        1 + VAT_adjusted)
     return df
 
 
@@ -257,8 +248,8 @@ def negative_demand_days(df):
 if plot_switch:
     negative_demand_days(df)
 
-# Drop redundant columns
-df = df[["demand", "price", "pv"]]
+# Keep only relevant columns
+df = df[["demand", "price", "price_nopeak", "pv"]]
 
 if df["demand"].min() < 0:
     sum_negatives = df[df["demand"] < 0]["demand"].sum()
@@ -396,7 +387,7 @@ def add_cold_price(df):
     df["cold_price_freezer"] = df["cold_price_freezer"].clip(lower=0)
     df["cold_price_chiller"] = df["cold_price_chiller"].clip(lower=0)
 
-    print("mean cold price is: ", df["cold_price"].mean(), " €c/kWh")
+    # print("mean cold price is: ", df["cold_price"].mean(), " €c/kWh")
 
     # drop columns
     # df = df.drop(columns=["COP_ambient_freezer", "COP_ambient_chiller", "cold_temp", "COP_caes_freezer", "COP_caes_chiller"])

@@ -22,7 +22,7 @@ from tabulate import tabulate
 from src.color_mapping import assign_colors_to_columns
 import configparser
 from pathlib import Path
-# import preprocess_data
+import preprocess_data
 
 
 # ────────────────────────────────
@@ -36,13 +36,13 @@ NON_SIMULT = CFG.getboolean("general", "non_simultaneity")
 LESS_HEAT_AND_COLD_PRICE = CFG.getboolean("general", "less_heat_and_cold_price")
 
 # peak‑mode / threshold & cost
+PEAK_COST_CENT_KW_nopeak = CFG.getfloat("pricing", "cost_eur_per_kw") * 100
 if CFG.getboolean("general", "peak_mode"):
     PEAK_THRESHOLD = CFG.getfloat("peak", "threshold_kw_peak")  # kW
-    PEAK_COST_EUR_KW = CFG.getfloat("pricing", "cost_eur_per_kw_peak")
+    PEAK_COST_CENT_KW = CFG.getfloat("pricing", "cost_eur_per_kw_peak") * 100
 else:
     PEAK_THRESHOLD = CFG.getfloat("peak", "threshold_kw")  # kW
-    PEAK_COST_EUR_KW = CFG.getfloat("pricing", "cost_eur_per_kw")
-PEAK_COST_CENT_KW = PEAK_COST_EUR_KW * 100  # convert € → ¢
+    PEAK_COST_CENT_KW = PEAK_COST_CENT_KW_nopeak
 
 # pricing
 FEED_IN_PRICE = CFG.getfloat("pricing", "feed_in_price")  # €cent/kWh
@@ -744,11 +744,12 @@ def evaluate_economic_impact(df, results):
 
     # Grid import cost
     df["cost_grid_import_ref"] = df["grid_import_ref"] * (
-        df["price"] / 100
+        df["price_nopeak"] / 100
     )  # Convert to €
     # peak cost reference
     peak_time_ref = df["grid_import_ref"].idxmax()
-    peak_cost_ref = df["grid_import_ref"].max() * PEAK_COST_CENT_KW / 100
+    peak_cost_ref = df["grid_import_ref"].max() * PEAK_COST_CENT_KW_nopeak / 100
+    print("peak cost ref: ", peak_cost_ref)
     df["peak_cost_ref"] = 0
     df.at[peak_time_ref, "peak_cost_ref"] = peak_cost_ref
 
@@ -781,9 +782,9 @@ def evaluate_economic_impact(df, results):
         df["grid_import_caes"] * df["price"] / 100
     )  # Convert to €
     peak_time_caes = df["grid_import_caes"].idxmax()
-    cost_peak_caes = df["grid_import_caes"].max() * PEAK_COST_CENT_KW / 100
+    peak_cost_caes = df["grid_import_caes"].max() * PEAK_COST_CENT_KW / 100
     df["peak_cost_caes"] = 0
-    df.at[peak_time_caes, "peak_cost_caes"] = cost_peak_caes
+    df.at[peak_time_caes, "peak_cost_caes"] = peak_cost_caes
 
     df["pv_self_use_earnings_caes"] = tiered_pv_earnings(df["pv"], df["pv_self_use_caes"])
     df["pv_feed_in_earnings_caes"] = (
@@ -811,7 +812,7 @@ def evaluate_economic_impact(df, results):
     df["pv_feed_in_difference"] = (
         df["pv_feed_in_earnings_caes"] - df["pv_feed_in_earnings_ref"]
     )
-    peak_cost_difference = peak_cost_ref - cost_peak_caes
+    peak_cost_difference = peak_cost_ref - peak_cost_caes
     cost_savings = df["cost_savings"].sum() + peak_cost_difference
 
     print("\n### Economic Impact of CAES ###")
