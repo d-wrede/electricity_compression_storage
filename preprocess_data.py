@@ -258,7 +258,7 @@ elif df["pv"].min() < 0:
     raise ValueError("Negative PV generation detected!")
 
 df["demand"] = df["demand"].clip(lower=0)
-df["pv"] = df["pv"].clip(lower=0)
+df["pv"] = df["pv"].clip(lower=0) * CFG.getfloat("tiered_pv", "pv_scale")
 
 print("length df is: ", len(df))
 
