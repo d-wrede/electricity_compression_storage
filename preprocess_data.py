@@ -108,10 +108,14 @@ def calc_price(df):
         add_on_price = ADD_ON_PRICE_PEAK * SCALE_GRID  # €cent/kWh  7.53 zu 13.08
     else:
         add_on_price = ADD_ON_PRICE * SCALE_GRID
+
     VAT_adjusted = VAT * SCALE_TAXES
-    df["price"] = (df["price"] * SCALE_PRICE + add_on_price) * (1 + VAT_adjusted)
-    df["price_nopeak"] = (df["price"] * SCALE_PRICE + ADD_ON_PRICE * SCALE_GRID) * (
+    base_price = df["price"].copy()
+
+    df["price"] = (base_price * SCALE_PRICE + add_on_price) * (1 + VAT_adjusted)
+    df["price_nopeak"] = (base_price * SCALE_PRICE + ADD_ON_PRICE * SCALE_GRID) * (
         1 + VAT_adjusted)
+
     return df
 
 

@@ -746,6 +746,7 @@ def evaluate_economic_impact(df, results):
     df["cost_grid_import_ref"] = df["grid_import_ref"] * (
         df["price_nopeak"] / 100
     )  # Convert to €
+
     # peak cost reference
     peak_time_ref = df["grid_import_ref"].idxmax()
     peak_cost_ref = df["grid_import_ref"].max() * PEAK_COST_CENT_KW_nopeak / 100
@@ -781,6 +782,7 @@ def evaluate_economic_impact(df, results):
     df["cost_grid_import_caes"] = (
         df["grid_import_caes"] * df["price"] / 100
     )  # Convert to €
+
     peak_time_caes = df["grid_import_caes"].idxmax()
     peak_cost_caes = df["grid_import_caes"].max() * PEAK_COST_CENT_KW / 100
     df["peak_cost_caes"] = 0
