@@ -751,7 +751,9 @@ def evaluate_economic_impact(df, results):
     peak_time_ref = df["grid_import_ref"].idxmax()
     peak_cost_ref = df["grid_import_ref"].max() * PEAK_COST_CENT_KW_nopeak / 100
     print("peak cost ref: ", peak_cost_ref)
-    df["peak_cost_ref"] = 0
+    df["peak_cost_ref"] = 0.0  # explizit float
+    df.loc[:, "peak_cost_ref"] = 0.0
+    # df["peak_cost_ref"] = 0
     df.at[peak_time_ref, "peak_cost_ref"] = peak_cost_ref
 
     # Total cost in the reference case
@@ -1311,11 +1313,13 @@ def create_economic_summary_table(df):
         peak_time = df[column].idxmax()
         peak_cost_value = df[column].max() * PEAK_COST_CENT_KW / 100
         column_name = "peak_cost_" + column.split("_")[-1]
-        df[column_name] = 0
+        df[column_name] = 0.0
+        df.loc[:, column_name] = 0.0
         df.at[peak_time, column_name] = peak_cost_value
 
-    define_peak_costs(df, "grid_import_ref")
-    define_peak_costs(df, "grid_import_caes")
+    # Peak costs are already calculated in the evaluate_economic_impact function
+    # define_peak_costs(df, "grid_import_ref")
+    # define_peak_costs(df, "grid_import_caes")
 
     df["compression_cost"] = df["compression_power"] * CONVERTER_COSTS_CENT / 100
     df["expansion_cost"] = df["expansion_power"] * CONVERTER_COSTS_CENT / 100
@@ -1733,6 +1737,7 @@ if __name__ == "__main__":
     validate_caes_model(df_l, results)
     evaluate_economic_impact(df_l, results)
     create_energy_balance_table(df_l)
+    print("peak cost ref: ", df_l["peak_cost_ref"].sum())
     create_economic_summary_table(df_l)
 
     # print_energy_economics(
@@ -1746,4 +1751,4 @@ if __name__ == "__main__":
     #     print_type="costs")
 
     plot_results(df_l)
-    plt.show()
+    # plt.show()
